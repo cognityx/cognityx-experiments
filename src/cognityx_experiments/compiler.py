@@ -215,27 +215,33 @@ def _training_steps(
             resources=dict(design.get("resource_constraints") or {}),
         )
     )
-    inference_ids: list[str] = []
+    inference_steps: list[tuple[LogicalRun, Mapping[str, Any], str]] = []
+    suites = sorted(
+        (plain(value) for value in design.get("evaluation_suites") or []),
+        key=lambda value: str(value["research_role"]),
+    )
     for run in runs:
-        step_id = f"{experiment_id}:infer:{run.treatment_id}:{run.seed}"
-        inference_ids.append(step_id)
-        train_id = f"{experiment_id}:train:{run.treatment_id}:{run.seed}"
-        steps.append(
-            _step(
-                plan_checksum,
-                execution_id,
-                step_id=step_id,
-                operation="execute_inference_pair",
-                component="inference",
-                experiment_id=experiment_id,
-                treatment_id=run.treatment_id,
-                seed=run.seed,
-                dependencies=(start_id, train_id),
-                inputs=run.inputs,
-                output_contract="cognityx.inference.pair/v1",
-                resources={"reuse_resident_base_model": True},
+        for suite in suites:
+            role = str(suite["research_role"])
+            step_id = f"{experiment_id}:infer:{run.treatment_id}:{run.seed}:{role}"
+            inference_steps.append((run, suite, step_id))
+            train_id = f"{experiment_id}:train:{run.treatment_id}:{run.seed}"
+            steps.append(
+                _step(
+                    plan_checksum,
+                    execution_id,
+                    step_id=step_id,
+                    operation="execute_inference_pair",
+                    component="inference",
+                    experiment_id=experiment_id,
+                    treatment_id=run.treatment_id,
+                    seed=run.seed,
+                    dependencies=(start_id, train_id),
+                    inputs={**plain(run.inputs), "evaluation_suite": suite},
+                    output_contract="cognityx.inference.pair/v1",
+                    resources={"reuse_resident_base_model": True},
+                )
             )
-        )
     stop_id = f"{experiment_id}:inference:stop"
     steps.append(
         _step(
@@ -247,7 +253,7 @@ def _training_steps(
             experiment_id=experiment_id,
             treatment_id=None,
             seed=None,
-            dependencies=tuple(inference_ids),
+            dependencies=tuple(value[2] for value in inference_steps),
             inputs={
                 "service": plain(
                     (execution.get("inference") or {}).get("service") or {}
@@ -258,8 +264,9 @@ def _training_steps(
         )
     )
     evaluator_ids: list[str] = []
-    for run, inference_id in zip(runs, inference_ids, strict=True):
-        step_id = f"{experiment_id}:evaluate:{run.treatment_id}:{run.seed}"
+    for run, suite, inference_id in inference_steps:
+        role = str(suite["research_role"])
+        step_id = f"{experiment_id}:evaluate:{run.treatment_id}:{run.seed}:{role}"
         evaluator_ids.append(step_id)
         steps.append(
             _step(
@@ -275,6 +282,7 @@ def _training_steps(
                 inputs={
                     "evaluator": plain(execution.get("evaluator") or {}),
                     "treatment_role": run.treatment_role,
+                    "evaluation_suite": suite,
                     "outcomes": {
                         "primary": plain(design.get("primary_outcome") or {}),
                         "secondary": plain(design.get("secondary_outcomes") or []),

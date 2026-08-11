@@ -418,7 +418,8 @@ class DryRunGateway:
         metric = str(step.input_references["outcomes"]["primary"]["metric"])
         treatment_role = str(step.input_references.get("treatment_role") or "treatment")
         value = {"control": 0.5, "treatment": 0.75, "comparator": 0.625}[treatment_role]
-        records = tuple(
+        role = str(step.input_references["evaluation_suite"]["research_role"])
+        records = (
             {
                 "evaluation_record_id": f"synthetic-{step.seed}-{role}",
                 "treatment_id": step.treatment_id,
@@ -433,21 +434,13 @@ class DryRunGateway:
                 "source_faithfulness": True,
                 "generation_status": "completed",
                 "evaluator_status": "finalized",
-                "knowledge_unit_id": f"synthetic-unit-{index}",
-                "fact_group_id": f"synthetic-fact-{index}",
+                "knowledge_unit_id": f"synthetic-unit-{role}",
+                "fact_group_id": f"synthetic-fact-{role}",
                 "document_id": "synthetic-document",
                 "metrics": {metric: value},
                 "resources": {"synthetic_cost_units": 1},
                 "semantic_judge_invocation_cost": 0,
-            }
-            for index, role in enumerate(
-                (
-                    "exact_recall",
-                    "paraphrase_evaluation",
-                    "heldout_knowledge_unit",
-                ),
-                start=1,
-            )
+            },
         )
         return ComponentResult(
             manifest_uri=result.manifest_uri,

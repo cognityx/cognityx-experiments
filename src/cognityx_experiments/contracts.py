@@ -622,6 +622,17 @@ def _parse_experiment(value: Mapping[str, Any]) -> Experiment:
             "Unsupported evaluation research roles: "
             + ", ".join(sorted(unsupported_roles))
         )
+    if design.evaluation_suites and len(declared_roles) != len(
+        design.evaluation_suites
+    ):
+        raise ValueError(
+            "Every design.evaluation_suites item requires one unique canonical "
+            "research_role"
+        )
+    if recipe == TRAINING_RECIPE and not design.evaluation_suites:
+        raise ValueError(
+            "training_treatment_comparison requires frozen evaluation_suites"
+        )
     if design.primary_outcome.role is None and len(declared_roles) > 1:
         raise ValueError(
             "design.primary_outcome.role is required when multiple evaluation "

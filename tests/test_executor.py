@@ -35,7 +35,7 @@ def test_synthetic_execution_creates_analysis_and_reuses_one_inference_session(
     result = executor.run(research_spec, logical, plan, _context(plan.execution_id))
 
     assert result["scientific_execution_status"] == "synthetic_completed"
-    assert result["completed_count"] == 17
+    assert result["completed_count"] == 33
     assert gateway.inference_start_count == 1
     status = ledger.status(plan)
     assert status["pending_count"] == 0
@@ -52,7 +52,7 @@ def test_resume_skips_every_successful_expensive_step(
 ) -> None:
     logical = compile_logical_plan(research_spec)
     plan = compile_execution_plan(logical)
-    failing_step = "POLICY-EXP-001:infer:control:11"
+    failing_step = "POLICY-EXP-001:infer:control:11:paraphrase_evaluation"
     ledger = ExperimentLedger(_store(tmp_path), plan.execution_id)
     gateway = DryRunGateway(fail_once_at=failing_step)
     executor = ExperimentExecutor(gateway, ledger, synthetic=True)

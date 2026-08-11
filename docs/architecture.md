@@ -37,3 +37,9 @@ model to check that pair, but Experiments compares treatment adapters with one
 another using the same frozen evaluation record and seed. Canonical research
 roles remain separate, and exact recall is displayed as a diagnostic rather
 than blended into a generalization endpoint.
+
+Because one Inference pair consumes one frozen evaluation set, the compiler
+creates a separate pair and Evaluator step for every treatment, seed, and
+declared research role. All of those steps share the same compatible resident
+base-model window, so scientific separation does not require repeated base
+model loading.

@@ -29,9 +29,10 @@ def test_execution_plan_groups_training_before_one_inference_window(
     logical = compile_logical_plan(research_spec)
     plan = compile_execution_plan(logical)
     operations = [step.operation for step in plan.steps]
-    assert len(plan.steps) == 17
+    assert len(plan.steps) == 33
     assert operations.count("start_or_reuse_inference") == 1
-    assert operations.count("execute_inference_pair") == 4
+    assert operations.count("execute_inference_pair") == 12
+    assert operations.count("evaluate_pair") == 12
     start = next(
         step for step in plan.steps if step.operation == "start_or_reuse_inference"
     )
