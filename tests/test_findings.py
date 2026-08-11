@@ -29,17 +29,24 @@ def _analysis() -> dict[str, Any]:
 
 def test_research_finding_is_deterministic_and_conservative(research_spec) -> None:
     experiment = research_spec.experiments[0]
-    arguments = {
-        "execution_id": "execution-fixed",
-        "analysis": _analysis(),
-        "evidence_references": [
-            {"manifest_uri": "storage://analysis.json", "checksum": "abc"}
-        ],
-        "generated_at": "2026-08-11T00:00:00+00:00",
-    }
-
-    first = generate_finding(research_spec, experiment, **arguments)
-    second = generate_finding(research_spec, experiment, **arguments)
+    analysis = _analysis()
+    evidence = [{"manifest_uri": "storage://analysis.json", "checksum": "abc"}]
+    first = generate_finding(
+        research_spec,
+        experiment,
+        execution_id="execution-fixed",
+        analysis=analysis,
+        evidence_references=evidence,
+        generated_at="2026-08-11T00:00:00+00:00",
+    )
+    second = generate_finding(
+        research_spec,
+        experiment,
+        execution_id="execution-fixed",
+        analysis=analysis,
+        evidence_references=evidence,
+        generated_at="2026-08-11T00:00:00+00:00",
+    )
 
     assert first.to_dict() == second.to_dict()
     assert first.hypothesis_relation == "inconclusive"
