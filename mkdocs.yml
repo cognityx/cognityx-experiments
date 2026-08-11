@@ -11,6 +11,7 @@ nav:
   - Research publication: research-publication.md
   - Research materials: research-materials.md
   - Production composition: production-composition.md
+  - SYSTEM-VALIDATION e2e-008: system-validation-e2e-008.md
   - Future Research Agent: future-research-agent.md
   - CLI: cli.md
 plugins:

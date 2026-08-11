@@ -9,7 +9,7 @@ import subprocess
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from importlib import metadata
+from importlib import import_module, metadata
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +27,9 @@ from cognityx_experiments.production import (
     JsonHttpTransport,
     StorageEvidenceVerifier,
     build_training_command,
+    build_training_runtime_check_command,
     validate_training_cli_result,
+    validate_training_runtime_check,
 )
 from cognityx_experiments.publication import PublicationPolicy
 
@@ -101,7 +103,7 @@ class ProductionPreflight:
         )
         self.inference_probe = inference_probe or _inference_probe
         self.gpu_inventory = gpu_inventory or _gpu_inventory
-        self.tracking_probe = tracking_probe or (lambda config: True)
+        self.tracking_probe = tracking_probe or _tracking_probe
         self.training_contract_runner = (
             training_contract_runner or _run_training_contract
         )
@@ -351,19 +353,79 @@ class ProductionPreflight:
                 or inputs.get("data_package_uri")
                 or inputs.get("dataset_manifest_uri")
             )
-            evidence: dict[str, Any] = {
+            base_evidence: dict[str, Any] = {
                 "step_id": step.step_id,
                 "treatment_id": step.treatment_id,
                 "seed": step.seed,
                 "training_revision": training_revision,
                 "success": False,
             }
+            config = dict(step.input_references.get("training") or {})
+            runtime_evidence = dict(base_evidence)
+            try:
+                runtime_arguments = build_training_runtime_check_command(step)
+                runtime_evidence["training_executable"] = Path(
+                    runtime_arguments[0]
+                ).name
+                runtime = validate_training_runtime_check(
+                    self.training_contract_runner(
+                        runtime_arguments,
+                        float(config.get("timeout_seconds", 21600)),
+                    )
+                )
+                runtime_evidence.update(
+                    {
+                        "package_versions": {
+                            name: package.get("version")
+                            for name, package in runtime["packages"].items()
+                            if isinstance(package, Mapping)
+                        },
+                        "cuda": runtime["cuda"],
+                        "success": True,
+                    }
+                )
+                checks.append(
+                    _passed(
+                        "component_contract",
+                        "training_runtime",
+                        "Training can execute its configured backend without "
+                        "loading a model.",
+                        runtime_evidence,
+                    )
+                )
+            except (subprocess.CalledProcessError, ComponentMachineOutputError) as exc:
+                runtime_evidence["exit_code"] = (
+                    exc.returncode
+                    if isinstance(exc, subprocess.CalledProcessError)
+                    else exc.exit_status
+                )
+                checks.append(
+                    _failed(
+                        "component_contract",
+                        "training_runtime",
+                        RuntimeError(
+                            f"Training runtime check failed for {step.step_id} "
+                            f"with exit status {runtime_evidence['exit_code']}"
+                        ),
+                        evidence=runtime_evidence,
+                    )
+                )
+            except Exception as exc:
+                checks.append(
+                    _failed(
+                        "component_contract",
+                        "training_runtime",
+                        exc,
+                        evidence=runtime_evidence,
+                    )
+                )
+
+            evidence = dict(base_evidence)
             try:
                 if not manifest_uri:
                     raise ValueError(
                         "Training dry-run requires a frozen package or dataset URI"
                     )
-                config = dict(step.input_references.get("training") or {})
                 arguments = build_training_command(
                     step,
                     manifest_uri=str(manifest_uri),
@@ -855,6 +917,21 @@ def _run_local_inference_contract(
             f"stderr_bytes={evidence['stderr_byte_count']}"
         )
     return evidence
+
+
+def _tracking_probe(config: Mapping[str, Any]) -> bool:
+    """Read the configured MLflow index without creating a scientific run."""
+    tracking_uri = config.get("tracking_uri") or config.get("uri")
+    experiment_name = config.get("experiment_name")
+    if not tracking_uri or not experiment_name:
+        return False
+    try:
+        mlflow = import_module("mlflow")
+        client = mlflow.tracking.MlflowClient(tracking_uri=str(tracking_uri))
+        client.search_experiments(max_results=1)
+    except Exception:  # noqa: BLE001 - a preflight capability probe fails closed
+        return False
+    return True
 
 
 def _command_vector(value: Any, *, name: str) -> tuple[str, ...]:

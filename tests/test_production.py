@@ -24,9 +24,10 @@ from cognityx_experiments.contracts import (
 from cognityx_experiments.executor import ExperimentExecutor
 from cognityx_experiments.ledger import ExperimentLedger
 from cognityx_experiments.pipeline import ResearchMaterialPipeline
-from cognityx_experiments.preflight import ProductionPreflight
+from cognityx_experiments.preflight import ProductionPreflight, _tracking_probe
 from cognityx_experiments.production import (
     TRAINING_CLI_RESULT_SCHEMA,
+    TRAINING_RUNTIME_CHECK_SCHEMA,
     CliDataForgeOperation,
     CliEvaluatorOperation,
     CliTrainingOperation,
@@ -35,7 +36,9 @@ from cognityx_experiments.production import (
     HttpInferenceOperation,
     JsonCommandRunner,
     build_training_command,
+    build_training_runtime_check_command,
     validate_training_cli_result,
+    validate_training_runtime_check,
 )
 from cognityx_experiments.publication import GitResearchPublisher
 from cognityx_experiments.synthesis import FindingSynthesizer
@@ -386,14 +389,37 @@ class _FailSecondPush:
 
 
 class _TrainingContractRunner:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, runtime_fail: bool = False) -> None:
         self.fail = fail
+        self.runtime_fail = runtime_fail
         self.calls: list[tuple[str, ...]] = []
 
     def __call__(self, arguments, timeout_seconds):
         del timeout_seconds
         selected = tuple(arguments)
         self.calls.append(selected)
+        if "--check-runtime" in selected:
+            if self.runtime_fail:
+                raise subprocess.CalledProcessError(1, selected)
+            return {
+                "schema": TRAINING_RUNTIME_CHECK_SCHEMA,
+                "backend": "custom-pytorch",
+                "passed": True,
+                "packages": {
+                    "peft": {
+                        "status": "available",
+                        "version": "0.20.0",
+                        "error_type": None,
+                    }
+                },
+                "missing_packages": [],
+                "cuda": {
+                    "required": True,
+                    "available": True,
+                    "device_count": 1,
+                    "error_type": None,
+                },
+            }
         experiment_id = selected[selected.index("--experiment-id") + 1]
         if self.fail or experiment_id == "invalid":
             raise subprocess.CalledProcessError(2, selected)
@@ -893,8 +919,13 @@ def test_preflight_uses_exact_training_dry_run_contract(
 
     assert result.passed is True
     train_steps = tuple(step for step in plan.steps if step.operation == "train")
-    assert len(runner.calls) == len(train_steps)
-    for step, arguments in zip(train_steps, runner.calls, strict=True):
+    runtime_calls = [call for call in runner.calls if "--check-runtime" in call]
+    dry_run_calls = [call for call in runner.calls if "--dry-run" in call]
+    assert len(runtime_calls) == len(train_steps)
+    assert len(dry_run_calls) == len(train_steps)
+    for step, arguments in zip(train_steps, runtime_calls, strict=True):
+        assert arguments == build_training_runtime_check_command(step)
+    for step, arguments in zip(train_steps, dry_run_calls, strict=True):
         manifest_uri = step.input_references["treatment"]["inputs"][
             "research_package_uri"
         ]
@@ -913,6 +944,17 @@ def test_preflight_uses_exact_training_dry_run_contract(
     assert len(checks) == len(train_steps)
     assert all(check.status == "passed" for check in checks)
     assert all(check.evidence["accepted_training_examples"] == 1 for check in checks)
+    runtime_checks = [
+        check
+        for check in result.checks
+        if check.category == "component_contract" and check.check == "training_runtime"
+    ]
+    assert len(runtime_checks) == len(train_steps)
+    assert all(check.status == "passed" for check in runtime_checks)
+    assert all(
+        check.evidence["package_versions"]["peft"] == "0.20.0"
+        for check in runtime_checks
+    )
 
 
 def test_json_command_runner_rejects_mixed_stdout_without_echoing_content(
@@ -974,6 +1016,87 @@ def test_training_machine_envelope_validation_fails_closed() -> None:
             {"schema": "unexpected", "mode": "dry_run"},
             expected_mode="dry_run",
         )
+
+
+def test_training_runtime_envelope_validation_fails_closed() -> None:
+    with pytest.raises(ValueError, match="unsupported schema"):
+        validate_training_runtime_check({"schema": "unexpected", "passed": True})
+    with pytest.raises(ValueError, match="did not pass"):
+        validate_training_runtime_check(
+            {
+                "schema": TRAINING_RUNTIME_CHECK_SCHEMA,
+                "backend": "custom-pytorch",
+                "passed": False,
+            }
+        )
+
+
+def test_preflight_fails_before_research_when_training_runtime_is_incomplete(
+    tmp_path: Path, research_spec: ResearchSpec
+) -> None:
+    runtime = _runtime(tmp_path / "storage")
+    spec = _frozen_spec(runtime, research_spec, tmp_path)
+    logical = compile_logical_plan(spec)
+    identities = _identities()
+    plan = compile_execution_plan(logical, software_identities=identities)
+
+    result = ProductionPreflight(
+        runtime,
+        results_repository=_results_repository(tmp_path / "results"),
+        repository_visibility=lambda repository: "PRIVATE",
+        inference_probe=lambda base_url: {"base_url": base_url, "ready": True},
+        training_contract_runner=_TrainingContractRunner(runtime_fail=True),
+        actual_software=identities,
+    ).run(spec, logical, plan)
+
+    assert result.passed is False
+    failed = [
+        check
+        for check in result.checks
+        if check.category == "component_contract" and check.check == "training_runtime"
+    ]
+    assert len(failed) == sum(step.operation == "train" for step in plan.steps)
+    assert all(check.status == "failed" for check in failed)
+    assert all(check.evidence["exit_code"] == 1 for check in failed)
+
+
+def test_mlflow_preflight_probe_is_read_only_and_requires_explicit_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class Client:
+        def __init__(self, *, tracking_uri):
+            calls.append(("client", tracking_uri))
+
+        def search_experiments(self, *, max_results):
+            calls.append(("search", max_results))
+            return []
+
+    monkeypatch.setattr(
+        "cognityx_experiments.preflight.import_module",
+        lambda name: type(
+            "MLflow",
+            (),
+            {"tracking": type("Tracking", (), {"MlflowClient": Client})},
+        ),
+    )
+
+    assert (
+        _tracking_probe(
+            {
+                "backend": "mlflow",
+                "tracking_uri": "sqlite:///research-index.db",
+                "experiment_name": "future-research",
+            }
+        )
+        is True
+    )
+    assert calls == [
+        ("client", "sqlite:///research-index.db"),
+        ("search", 1),
+    ]
+    assert _tracking_probe({"backend": "mlflow"}) is False
     with pytest.raises(ValueError, match="mode"):
         validate_training_cli_result(
             {"schema": TRAINING_CLI_RESULT_SCHEMA, "mode": "completed"},
