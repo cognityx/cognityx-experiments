@@ -33,6 +33,15 @@ def _repository(path: Path) -> Path:
     return path
 
 
+class _RecordingRunner:
+    def __init__(self) -> None:
+        self.commands: list[list[str]] = []
+
+    def __call__(self, command, **parameters):
+        self.commands.append(list(command))
+        return subprocess.run(command, **parameters)
+
+
 def _preregistration_content() -> dict[str, object]:
     return {
         "research-spec.yaml": {
@@ -104,6 +113,79 @@ def test_snapshot_whitelist_redaction_and_superseding_identity() -> None:
     assert corrected.manifest["supersedes_snapshot_id"] == snapshot.snapshot_id
 
 
+def test_structured_jsonl_is_sanitized_before_serialization() -> None:
+    record = {
+        "treatment_id": "qualified",
+        "seed": 11,
+        "research_question_id": "RQ-1",
+        "model_revision": "model-commit",
+        "manifest_checksum": "sha256:manifest",
+        "tokenizer_revision": "tokenizer-commit",
+        "tokenizer_checksum": "sha256:tokenizer",
+        "prompt_tokens": 21,
+        "completion_tokens": 8,
+        "token_budget": 512,
+        "nested": {
+            "prompt": "private prompt",
+            "candidate_answer": "private candidate",
+            "answer": "private answer",
+            "response": "private response",
+            "source_text": "private source",
+            "raw_text": "private raw text",
+            "path": "/tmp/private-record.json",
+            "access_token": "credential",
+            "api_key": "credential",
+            "password": "credential",
+            "private_key": "credential",
+            "Authorization": "Bearer credential",
+        },
+    }
+    snapshot = build_snapshot(
+        moment="terminal",
+        experiment_id="EXP-1",
+        execution_id="execution-1",
+        content={**_terminal_content(), "records.jsonl": [record]},
+    )
+
+    rendered = snapshot.files["records.jsonl"].decode()
+    parsed = json.loads(rendered)
+    for secret_value in (
+        "private prompt",
+        "private candidate",
+        "private answer",
+        "private response",
+        "private source",
+        "private raw text",
+        "/tmp/private-record.json",
+        "Bearer credential",
+    ):
+        assert secret_value not in rendered
+    assert parsed["tokenizer_revision"] == "tokenizer-commit"
+    assert parsed["tokenizer_checksum"] == "sha256:tokenizer"
+    assert parsed["prompt_tokens"] == 21
+    assert parsed["completion_tokens"] == 8
+    assert parsed["token_budget"] == 512
+    assert parsed["model_revision"] == "model-commit"
+    assert parsed["manifest_checksum"] == "sha256:manifest"
+    assert parsed["treatment_id"] == "qualified"
+    assert parsed["seed"] == 11
+    assert parsed["research_question_id"] == "RQ-1"
+    assert set(parsed["nested"].values()) == {
+        "<redacted-content>",
+        "<redacted-path>",
+        "<redacted-secret>",
+    }
+
+    metadata_only = build_snapshot(
+        moment="terminal",
+        experiment_id="EXP-1",
+        execution_id="execution-1",
+        content={**_terminal_content(), "records.jsonl": [record]},
+        content_policy="metadata_only",
+    )
+    assert "records.jsonl" not in metadata_only.files
+
+
 def test_git_publisher_is_idempotent_and_detects_immutable_conflict(
     tmp_path: Path,
 ) -> None:
@@ -131,12 +213,21 @@ def test_git_publisher_is_idempotent_and_detects_immutable_conflict(
         table_csv="experiment,effect\nEXP-1,0.25\n",
         figure_data={"effect": 0.25},
     )
-    publisher = GitResearchPublisher(repository)
+    runner = _RecordingRunner()
+    publisher = GitResearchPublisher(
+        repository,
+        expected_repository=None,
+        runner=runner,
+    )
 
     receipt = publisher.publish(snapshot, journal=journal)
     repeated = publisher.publish(snapshot, journal=journal)
 
     assert receipt.commit_sha == repeated.commit_sha
+    add_commands = [command for command in runner.commands if command[1] == "add"]
+    assert add_commands
+    assert all("research" not in command for command in add_commands)
+    assert all(snapshot.relative_path not in command for command in add_commands)
     assert (repository / "research/AREA-1/H-1/evidence-ledger.jsonl").exists()
     assert (repository / "research/AREA-1/H-1/RQ-1/findings.jsonl").exists()
     assert (
@@ -144,5 +235,28 @@ def test_git_publisher_is_idempotent_and_detects_immutable_conflict(
     ).exists()
     snapshot_file = repository / snapshot.relative_path / "statistics.json"
     snapshot_file.write_text("{}\n", encoding="utf-8")
+    _git(repository, "add", snapshot.relative_path)
+    _git(repository, "commit", "-m", "Simulate conflicting immutable history")
     with pytest.raises(FileExistsError, match="Immutable snapshot file conflict"):
         publisher.publish(snapshot, journal=journal)
+
+
+def test_git_publisher_rejects_wrong_repository_and_dirty_worktree(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "results")
+    snapshot = build_snapshot(
+        moment="terminal",
+        experiment_id="EXP-1",
+        execution_id="execution-1",
+        content=_terminal_content(),
+    )
+
+    with pytest.raises(ValueError, match="Unexpected research-results repository"):
+        GitResearchPublisher(repository).publish(snapshot)
+
+    (repository / "unrelated.txt").write_text("do not stage\n", encoding="utf-8")
+    publisher = GitResearchPublisher(repository, expected_repository=None)
+    with pytest.raises(RuntimeError, match="worktree is not clean"):
+        publisher.publish(snapshot)
+    assert not (repository / snapshot.relative_path).exists()

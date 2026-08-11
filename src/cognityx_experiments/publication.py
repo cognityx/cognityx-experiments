@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -42,13 +43,28 @@ _TERMINAL_FILES = frozenset(
         "narrative.json",
     }
 )
-_SECRET_PARTS = frozenset(
-    {"secret", "token", "password", "credential", "api_key", "private_key"}
+_CREDENTIAL_KEYS = frozenset(
+    {
+        "authorization",
+        "password",
+        "credential",
+        "credentials",
+        "api_key",
+        "apikey",
+        "api_token",
+        "secret",
+        "private_key",
+        "access_token",
+        "refresh_token",
+        "auth_token",
+        "bearer_token",
+    }
 )
 _SANITIZED_TEXT_KEYS = frozenset(
     {"answer", "candidate_answer", "prompt", "response", "source_text", "raw_text"}
 )
 _PATH = re.compile(r"(?:/home/|/tmp/|[A-Za-z]:\\Users\\)")
+_PUBLISH_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,10 +194,12 @@ class GitResearchPublisher:
         repository: str | Path,
         *,
         push: bool = False,
+        expected_repository: str | None = "cognityx/cognityx-experiment-results",
         runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     ) -> None:
         self.repository = Path(repository).resolve()
         self.push = push
+        self.expected_repository = expected_repository
         self.runner = runner or subprocess.run
         if not (self.repository / ".git").exists():
             raise ValueError(f"Not a Git repository: {self.repository}")
@@ -192,18 +210,41 @@ class GitResearchPublisher:
         *,
         journal: JournalRecord | None = None,
     ) -> GitPublicationReceipt:
+        """Run one serialized, clean, exact-path Git publication transaction."""
+        with _PUBLISH_LOCK:
+            return self._publish(snapshot, journal=journal)
+
+    def _publish(
+        self,
+        snapshot: Snapshot,
+        *,
+        journal: JournalRecord | None,
+    ) -> GitPublicationReceipt:
+        self._verify_repository()
+        self._ensure_clean()
+        self._synchronize()
         destination = self.repository / snapshot.relative_path
-        self._write_snapshot(destination, snapshot)
+        written = self._write_snapshot(destination, snapshot)
         if journal is not None:
             if snapshot.moment != "terminal":
                 raise ValueError("Only terminal snapshots update the research journal")
-            self._update_journal(snapshot, journal)
-        add_paths = [snapshot.relative_path]
-        if (self.repository / "research").exists():
-            add_paths.append("research")
+            written.update(self._update_journal(snapshot, journal))
+        add_paths = sorted(written)
         self._git("add", "--", *add_paths)
-        status = self._git("status", "--porcelain").stdout.strip()
-        if status:
+        staged = {
+            name
+            for name in self._git("diff", "--cached", "--name-only", "-z").stdout.split(
+                "\0"
+            )
+            if name
+        }
+        unexpected = staged - set(add_paths)
+        if unexpected:
+            raise RuntimeError(
+                "Git transaction staged unexpected paths: "
+                + ", ".join(sorted(unexpected))
+            )
+        if staged:
             self._git(
                 "commit",
                 "-m",
@@ -212,6 +253,7 @@ class GitResearchPublisher:
         commit_sha = self._git("rev-parse", "HEAD").stdout.strip()
         if self.push:
             self._git("push", "origin", "HEAD")
+        self._ensure_clean()
         repository = self._repository_identity()
         return GitPublicationReceipt(
             repository=repository,
@@ -220,7 +262,11 @@ class GitResearchPublisher:
             snapshot_id=snapshot.snapshot_id,
         )
 
-    def _write_snapshot(self, destination: Path, snapshot: Snapshot) -> None:
+    def _write_snapshot(self, destination: Path, snapshot: Snapshot) -> set[str]:
+        written = {
+            (destination / PurePosixPath(name)).relative_to(self.repository).as_posix()
+            for name in snapshot.files
+        }
         if destination.exists():
             existing = destination / "snapshot-manifest.json"
             if (
@@ -237,13 +283,14 @@ class GitResearchPublisher:
                         "Immutable snapshot file conflict: "
                         f"{snapshot.snapshot_id}/{name}"
                     )
-            return
+            return written
         for name, value in snapshot.files.items():
             target = destination / PurePosixPath(name)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(value)
+        return written
 
-    def _update_journal(self, snapshot: Snapshot, journal: JournalRecord) -> None:
+    def _update_journal(self, snapshot: Snapshot, journal: JournalRecord) -> set[str]:
         base = (
             self.repository
             / "research"
@@ -251,7 +298,9 @@ class GitResearchPublisher:
             / journal.hypothesis_id
         )
         base.mkdir(parents=True, exist_ok=True)
+        written: set[Path] = set()
         hypothesis_path = base / "hypothesis.yaml"
+        written.add(hypothesis_path)
         hypothesis_bytes = dump_yaml(journal.hypothesis).encode()
         if (
             hypothesis_path.exists()
@@ -272,25 +321,31 @@ class GitResearchPublisher:
             ).get("hypothesis_relation"),
         }
         _append_jsonl(base / "evidence-ledger.jsonl", evidence, "snapshot_id")
+        written.add(base / "evidence-ledger.jsonl")
         for rq_id in journal.research_question_ids:
             rq = base / rq_id
             rq.mkdir(parents=True, exist_ok=True)
             rq_value = journal.questions[rq_id]
             rq_path = rq / "rq.yaml"
+            written.add(rq_path)
             rq_bytes = dump_yaml(rq_value).encode()
             if rq_path.exists() and rq_path.read_bytes() != rq_bytes:
                 raise FileExistsError(f"Frozen research question changed: {rq_id}")
             if not rq_path.exists():
                 rq_path.write_bytes(rq_bytes)
             _append_jsonl(rq / "findings.jsonl", journal.finding, "finding_id")
+            written.add(rq / "findings.jsonl")
             (rq / "findings.md").write_text(
                 _findings_markdown(_read_jsonl(rq / "findings.jsonl")),
                 encoding="utf-8",
             )
+            written.add(rq / "findings.md")
             _append_csv(rq / "experiment-table.csv", journal.table_csv)
+            written.add(rq / "experiment-table.csv")
             figures = rq / "figure-data"
             figures.mkdir(exist_ok=True)
             figure_path = figures / f"{snapshot.snapshot_id}.json"
+            written.add(figure_path)
             figure_bytes = _file_bytes("figure.json", journal.figure_data)
             if figure_path.exists() and figure_path.read_bytes() != figure_bytes:
                 raise FileExistsError("Immutable figure-data conflict")
@@ -299,6 +354,7 @@ class GitResearchPublisher:
                 rq / "experiments" / snapshot.experiment_id / "snapshots.jsonl"
             )
             experiment_path.parent.mkdir(parents=True, exist_ok=True)
+            written.add(experiment_path)
             _append_jsonl(
                 experiment_path,
                 {
@@ -313,6 +369,33 @@ class GitResearchPublisher:
             _evidence_summary(_read_jsonl(base / "evidence-ledger.jsonl")),
             encoding="utf-8",
         )
+        written.add(base / "evidence-summary.md")
+        return {path.relative_to(self.repository).as_posix() for path in written}
+
+    def _verify_repository(self) -> None:
+        if self.expected_repository is None:
+            return
+        actual = _normalize_repository(self._repository_identity())
+        expected = _normalize_repository(self.expected_repository)
+        if actual != expected:
+            raise ValueError(
+                f"Unexpected research-results repository: {actual or 'unknown'}"
+            )
+
+    def _ensure_clean(self) -> None:
+        status = self._git("status", "--porcelain").stdout.strip()
+        if status:
+            raise RuntimeError("Research-results repository worktree is not clean")
+
+    def _synchronize(self) -> None:
+        if not self.push:
+            return
+        try:
+            self._git("remote", "get-url", "origin")
+        except subprocess.CalledProcessError:
+            return
+        self._git("fetch", "origin")
+        self._git("pull", "--ff-only")
 
     def _git(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return self.runner(
@@ -351,8 +434,7 @@ def _sanitize(value: Any, *, content_policy: str, key: str = "") -> Any:
         for name, item in value.items():
             selected = str(name)
             lowered = selected.lower()
-            parts = set(re.split(r"[^a-z0-9_]+", lowered))
-            if parts & _SECRET_PARTS or any(part in lowered for part in _SECRET_PARTS):
+            if _credential_key(selected):
                 result[selected] = "<redacted-secret>"
             elif content_policy != "full" and lowered in _SANITIZED_TEXT_KEYS:
                 result[selected] = "<redacted-content>"
@@ -375,7 +457,15 @@ def _sanitize(value: Any, *, content_policy: str, key: str = "") -> Any:
 def _file_bytes(name: str, value: Any) -> bytes:
     if isinstance(value, bytes):
         return value
-    if name.endswith((".md", ".csv", ".jsonl")) and isinstance(value, str):
+    if name.endswith(".jsonl"):
+        if not isinstance(value, Sequence) or isinstance(
+            value, (str, bytes, bytearray)
+        ):
+            raise ValueError("JSONL snapshot content must be structured records")
+        if not all(isinstance(item, Mapping) for item in value):
+            raise ValueError("Every JSONL snapshot record must be a mapping")
+        return b"".join(canonical_bytes(item) + b"\n" for item in value)
+    if name.endswith((".md", ".csv")) and isinstance(value, str):
         return value.encode()
     if name.endswith((".yaml", ".yml")):
         return dump_yaml(value).encode()
@@ -389,6 +479,22 @@ def _sha256_bytes(value: bytes) -> str:
     import hashlib
 
     return hashlib.sha256(value).hexdigest()
+
+
+def _credential_key(key: str) -> bool:
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key))
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", separated).lower().strip("_")
+    padded = f"_{normalized}_"
+    return any(f"_{credential}_" in padded for credential in _CREDENTIAL_KEYS)
+
+
+def _normalize_repository(value: str) -> str:
+    selected = value.strip().removesuffix(".git").rstrip("/")
+    if selected.startswith("git@github.com:"):
+        return selected.split(":", 1)[1]
+    if "github.com/" in selected:
+        return selected.split("github.com/", 1)[1]
+    return selected
 
 
 def _append_jsonl(path: Path, value: Mapping[str, Any], identity: str) -> None:

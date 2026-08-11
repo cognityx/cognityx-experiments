@@ -165,7 +165,7 @@ def test_successful_pipeline_generates_storage_git_journal_and_observability(
     executor, _, logical, plan = _executor(
         research_spec,
         store,
-        GitResearchPublisher(repository),
+        GitResearchPublisher(repository, expected_repository=None),
         exporter=exporter,
     )
 
@@ -209,7 +209,7 @@ def test_resume_retries_synthesis_without_rerunning_science(
     executor, gateway, logical, plan = _executor(
         research_spec,
         store,
-        GitResearchPublisher(repository),
+        GitResearchPublisher(repository, expected_repository=None),
         synthesizer=synthesizer,
     )
 
@@ -244,7 +244,12 @@ def test_resume_retries_git_push_without_rerunning_science(
     executor, gateway, logical, plan = _executor(
         research_spec,
         store,
-        GitResearchPublisher(repository, push=True, runner=runner),
+        GitResearchPublisher(
+            repository,
+            push=True,
+            expected_repository=None,
+            runner=runner,
+        ),
     )
 
     first = executor.run(research_spec, logical, plan, _context(plan.execution_id))

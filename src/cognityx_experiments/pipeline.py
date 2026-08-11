@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from cognityx_experiments.canonical import canonical_bytes, plain
+from cognityx_experiments.canonical import plain
 from cognityx_experiments.contracts import (
     ExecutionPlan,
     Experiment,
@@ -150,9 +150,7 @@ class ResearchMaterialPipeline:
                 "lineage.json": evidence,
                 "comparison.json": analysis,
                 "comparison.md": finding.observed_claim + "\n",
-                "records.jsonl": "".join(
-                    canonical_bytes(record).decode() + "\n" for record in records
-                ),
+                "records.jsonl": records,
                 "statistics.json": analysis,
                 "resources.json": analysis.get("resources") or {},
                 "finding.json": finding.to_dict(),

@@ -100,6 +100,19 @@ def analyse_records(
         role: _role_rates(diagnostic_records, primary_metric, {role})
         for role in sorted(EVALUATION_RESEARCH_ROLES)
     }
+    for treatment_id, summary in treatment_summary.items():
+        summary["by_role"] = {
+            role: _treatment_summary(
+                [
+                    record
+                    for record in diagnostic_records
+                    if record.get("research_role") == role
+                ],
+                treatment_id=treatment_id,
+                metric=primary_metric,
+            )
+            for role in sorted(EVALUATION_RESEARCH_ROLES)
+        }
     role_diagnostics["generalization"] = _role_rates(
         diagnostic_records,
         primary_metric,
