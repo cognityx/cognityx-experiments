@@ -38,11 +38,15 @@ The production gateway uses the existing public boundaries:
   A component's standard output is only a compact handoff, never the evidence
   itself.
 
-Production and preflight use one Training command builder. Preflight appends
-only `--dry-run`, so Training itself validates the effective configuration,
-Storage package, tokenizer selection, sequence length and accepted examples
-before preregistration or scientific execution begins. Model weights and the
-optimizer are not allocated by this check.
+Before preregistration, preflight asks Training two separate questions through
+its public command. First, `--check-runtime` verifies that the Training-owned
+execution libraries are installed and, when four-bit training is configured,
+that Torch can see CUDA. Experiments validates the result but does not copy or
+redefine Training's package list. Second, the shared production command builder
+adds `--dry-run`, so Training validates the effective configuration, Storage
+package, tokenizer selection, sequence length and accepted examples. Neither
+check loads model weights, creates an optimizer, trains, or writes research
+evidence.
 
 A locally managed Inference service has a second inexpensive contract check.
 The frozen configuration supplies the production launcher and may supply a
@@ -70,6 +74,17 @@ These are explicit adapters rather than a generic plugin framework because the
 set of scientific operations is small and each owner has a different contract.
 The separation prevents Experiments from interpreting private model or storage
 details.
+
+## Observation readiness
+
+Research may select structured JSON logging or MLflow without changing any
+component's scoring or generation meaning. When MLflow is selected, preflight
+requires an explicit tracking URI and experiment name, constructs a read-only
+MLflow client, and verifies the index can be queried. It creates no run during
+preflight. Root and component contexts carry parent run identities; components
+publish scalar metrics and Storage URI/checksum references. Storage remains the
+authoritative evidence store, while MLflow is only a search and visualization
+index.
 
 ## What is frozen
 

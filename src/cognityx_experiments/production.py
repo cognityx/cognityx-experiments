@@ -17,6 +17,7 @@ from cognityx_experiments.contracts import ExecutionStep
 from cognityx_experiments.executor import ComponentResult
 
 TRAINING_CLI_RESULT_SCHEMA = "cognityx.training.cli-result/v1"
+TRAINING_RUNTIME_CHECK_SCHEMA = "cognityx.training.runtime-check/v1"
 
 
 class ComponentCommandRunner(Protocol):
@@ -213,6 +214,31 @@ def validate_training_cli_result(
                 )
         elif not isinstance(selected, str) or not selected:
             raise ValueError(f"Training CLI result is missing required field {name!r}")
+    return plain(value)
+
+
+def validate_training_runtime_check(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Validate Training's owner-defined no-model capability result."""
+    if value.get("schema") != TRAINING_RUNTIME_CHECK_SCHEMA:
+        raise ValueError("Training runtime check has an unsupported schema")
+    if value.get("backend") != "custom-pytorch":
+        raise ValueError("Training runtime check has an unsupported backend")
+    if value.get("passed") is not True:
+        raise ValueError("Training runtime check did not pass")
+    packages = value.get("packages")
+    if not isinstance(packages, Mapping) or not packages:
+        raise ValueError("Training runtime check has no package inventory")
+    cuda = value.get("cuda")
+    if not isinstance(cuda, Mapping):
+        raise ValueError("Training runtime check has no CUDA inventory")
+    for name in ("required", "available"):
+        if not isinstance(cuda.get(name), bool):
+            raise ValueError(f"Training runtime CUDA field {name!r} must be boolean")
+    device_count = cuda.get("device_count")
+    if isinstance(device_count, bool) or not isinstance(device_count, int):
+        raise ValueError("Training runtime CUDA device_count must be an integer")
+    if device_count < 0:
+        raise ValueError("Training runtime CUDA device_count must not be negative")
     return plain(value)
 
 
@@ -938,6 +964,19 @@ def build_training_command(
     if dry_run:
         arguments.append("--dry-run")
     return tuple(arguments)
+
+
+def build_training_runtime_check_command(step: ExecutionStep) -> tuple[str, ...]:
+    """Build Training's public no-model capability command."""
+    config = dict(step.input_references.get("training") or {})
+    return (
+        str(config.get("executable") or "cognityx-training"),
+        "--config",
+        str(config["config"]),
+        "--check-runtime",
+        "--output-format",
+        "json",
+    )
 
 
 def _optional_string(value: Any) -> str | None:
