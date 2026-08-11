@@ -400,7 +400,9 @@ class GitResearchPublisher:
                 "-m",
                 f"Publish research snapshot {snapshot.snapshot_id}",
             )
-        commit_sha = self._git("rev-parse", "HEAD").stdout.strip()
+            commit_sha = self._git("rev-parse", "HEAD").stdout.strip()
+        else:
+            commit_sha = self._snapshot_commit(snapshot)
         if self.push:
             self._git("push", "origin", "HEAD")
         self._ensure_clean()
@@ -411,6 +413,22 @@ class GitResearchPublisher:
             snapshot_path=snapshot.relative_path,
             snapshot_id=snapshot.snapshot_id,
         )
+
+    def _snapshot_commit(self, snapshot: Snapshot) -> str:
+        """Return the immutable snapshot's original publication commit."""
+        commit_sha = self._git(
+            "log",
+            "-1",
+            "--format=%H",
+            "--",
+            snapshot.relative_path,
+        ).stdout.strip()
+        if not commit_sha:
+            raise RuntimeError(
+                "Existing research snapshot has no Git publication commit: "
+                f"{snapshot.relative_path}"
+            )
+        return commit_sha
 
     def _write_snapshot(self, destination: Path, snapshot: Snapshot) -> set[str]:
         written = {

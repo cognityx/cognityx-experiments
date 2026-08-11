@@ -313,6 +313,32 @@ def test_git_publisher_is_idempotent_and_detects_immutable_conflict(
         publisher.publish(snapshot, journal=journal)
 
 
+def test_git_publisher_reuses_original_receipt_after_later_snapshot(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "results")
+    publisher = GitResearchPublisher(repository, expected_repository=None)
+    preregistration = build_snapshot(
+        moment="preregistration",
+        experiment_id="EXP-1",
+        execution_id="execution-1",
+        content=_preregistration_content(),
+    )
+    terminal = build_snapshot(
+        moment="terminal",
+        experiment_id="EXP-1",
+        execution_id="execution-1",
+        content=_terminal_content(),
+    )
+
+    preregistration_receipt = publisher.publish(preregistration)
+    terminal_receipt = publisher.publish(terminal)
+    repeated_receipt = publisher.publish(preregistration)
+
+    assert terminal_receipt.commit_sha != preregistration_receipt.commit_sha
+    assert repeated_receipt == preregistration_receipt
+
+
 def test_git_publisher_rejects_wrong_repository_and_dirty_worktree(
     tmp_path: Path,
 ) -> None:
