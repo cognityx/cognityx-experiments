@@ -95,6 +95,25 @@ class ComponentGateway(Protocol):
     ) -> ComponentResult: ...
 
 
+class ResearchMaterialHook(Protocol):
+    """Automatic Storage-first material generation around scientific execution."""
+
+    def preregister(
+        self,
+        spec: ResearchSpec,
+        logical: LogicalExperimentPlan,
+        plan: ExecutionPlan,
+    ) -> Mapping[str, Any]: ...
+
+    def complete(
+        self,
+        spec: ResearchSpec,
+        logical: LogicalExperimentPlan,
+        plan: ExecutionPlan,
+        results: Mapping[str, Mapping[str, Any]],
+    ) -> Mapping[str, Any]: ...
+
+
 class ExperimentExecutor:
     """Execute a frozen plan once, reusing immutable completed-step records."""
 
@@ -106,12 +125,18 @@ class ExperimentExecutor:
         exporter: ObservationExporter | None = None,
         observability_failure_policy: str = "warn",
         synthetic: bool = False,
+        material_hook: ResearchMaterialHook | None = None,
     ) -> None:
         self.gateway = gateway
         self.ledger = ledger
         self.exporter = exporter or NoOpExporter()
         self.observability_failure_policy = observability_failure_policy
         self.synthetic = synthetic
+        self.material_hook = material_hook
+        if not synthetic and material_hook is None:
+            raise ValueError(
+                "Scientific execution requires an automatic research-material hook"
+            )
 
     def run(
         self,
@@ -131,6 +156,9 @@ class ExperimentExecutor:
             resume=resume,
             synthetic=self.synthetic,
         )
+        preregistration: Mapping[str, Any] = {}
+        if self.material_hook is not None:
+            preregistration = self.material_hook.preregister(spec, logical, plan)
         context = ObservationContext.from_execution_context(
             execution_context,
             component="experiments",
@@ -225,6 +253,39 @@ class ExperimentExecutor:
                 },
             )
         terminal = self.ledger.finalize(plan)
+        materials: Mapping[str, Any] = {}
+        material_error: dict[str, str] | None = None
+        if self.material_hook is not None:
+            try:
+                materials = self.material_hook.complete(spec, logical, plan, results)
+            except Exception as exc:  # noqa: BLE001 - scientific work is already durable
+                material_error = {
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }
+        for publication in materials.get("terminal_publications", []):
+            receipt = publication.get("publication_receipt") or {}
+            receipt_uri = publication.get("receipt_uri")
+            if receipt_uri:
+                session.artifact(
+                    ArtifactReference(
+                        name=f"{publication['experiment_id']}.publication_receipt",
+                        uri=str(receipt_uri),
+                        checksum=str(publication["snapshot_id"]),
+                        schema="cognityx.research.git-publication-receipt/v1",
+                        role="publication_receipt",
+                    )
+                )
+            if receipt:
+                session.event(
+                    "experiment.git_publication.completed",
+                    attributes={
+                        "experiment_id": publication["experiment_id"],
+                        "snapshot_id": publication["snapshot_id"],
+                        "repository": receipt.get("repository"),
+                        "commit_sha": receipt.get("commit_sha"),
+                    },
+                )
         session.metrics(
             {
                 "experiment.step_count": terminal["step_count"],
@@ -236,6 +297,9 @@ class ExperimentExecutor:
             attributes={
                 "ledger_uri": terminal["ledger_uri"],
                 "synthetic": self.synthetic,
+                "research_material_status": (
+                    "pending_retry" if material_error else "completed"
+                ),
             },
         )
         return {
@@ -244,6 +308,9 @@ class ExperimentExecutor:
                 "synthetic_completed" if self.synthetic else "completed"
             ),
             "observability_status": session.result.status,
+            **dict(preregistration),
+            **dict(materials),
+            **({"research_material_error": material_error} if material_error else {}),
         }
 
     def _execute(

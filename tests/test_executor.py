@@ -96,3 +96,15 @@ def test_resume_rejects_a_changed_frozen_plan(
             resume=True,
             synthetic=True,
         )
+
+
+def test_scientific_executor_requires_automatic_research_materials(
+    tmp_path: Path, research_spec: ResearchSpec
+) -> None:
+    plan = compile_execution_plan(compile_logical_plan(research_spec))
+
+    with pytest.raises(ValueError, match="automatic research-material hook"):
+        ExperimentExecutor(
+            DryRunGateway(),
+            ExperimentLedger(_store(tmp_path), plan.execution_id),
+        )
