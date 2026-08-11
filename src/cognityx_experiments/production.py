@@ -351,25 +351,12 @@ class CliTrainingOperation:
         parent_run_id: str | None,
     ) -> Mapping[str, Any]:
         config = dict(step.input_references.get("training") or {})
-        experiment_id = f"exp-{checksum(step.experiment_id)[:24]}"
-        arguments = [
-            str(config.get("executable") or "cognityx-training"),
-            "--config",
-            str(config["config"]),
-            "--dataset-uri",
-            str(prepared["manifest_uri"]),
-            "--dataset-input-mode",
-            "dataforge_manifest",
-            "--run-id",
-            run_id,
-            "--experiment-id",
-            experiment_id,
-            "--seed",
-            str(step.seed),
-            *_storage_arguments(config),
-        ]
-        if parent_run_id:
-            arguments.extend(("--parent-run-id", parent_run_id))
+        arguments = build_training_command(
+            step,
+            manifest_uri=str(prepared["manifest_uri"]),
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+        )
         return self.runner.run(
             arguments,
             timeout_seconds=float(config.get("timeout_seconds", 21600)),
@@ -826,6 +813,41 @@ def _storage_arguments(config: Mapping[str, Any]) -> list[str]:
     if config.get("storage_root"):
         return ["--storage-root", str(config["storage_root"])]
     return []
+
+
+def build_training_command(
+    step: ExecutionStep,
+    *,
+    manifest_uri: str,
+    run_id: str,
+    parent_run_id: str | None,
+    dry_run: bool = False,
+) -> tuple[str, ...]:
+    """Build the one authoritative Training CLI argument vector."""
+    if step.seed is None:
+        raise ValueError("Training step is missing its frozen seed")
+    config = dict(step.input_references.get("training") or {})
+    arguments = [
+        str(config.get("executable") or "cognityx-training"),
+        "--config",
+        str(config["config"]),
+        "--dataset-uri",
+        manifest_uri,
+        "--dataset-input-mode",
+        "dataforge_manifest",
+        "--run-id",
+        run_id,
+        "--experiment-id",
+        f"exp-{checksum(step.experiment_id)[:24]}",
+        "--seed",
+        str(step.seed),
+        *_storage_arguments(config),
+    ]
+    if parent_run_id:
+        arguments.extend(("--parent-run-id", parent_run_id))
+    if dry_run:
+        arguments.append("--dry-run")
+    return tuple(arguments)
 
 
 def _optional_string(value: Any) -> str | None:
