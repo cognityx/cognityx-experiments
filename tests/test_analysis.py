@@ -155,3 +155,68 @@ def test_missing_treatment_endpoint_is_unresolved_not_a_tie() -> None:
     assert result["cluster_bootstrap"]["cluster_field"] == "knowledge_unit_id"
     assert result["resources"] == {"gpu_seconds": 6.0}
     assert result["semantic_judge_invocation_cost"] == pytest.approx(0.03)
+
+
+def test_all_unresolved_endpoints_produce_an_honest_terminal_analysis() -> None:
+    records = [
+        _record(
+            "raw",
+            "paraphrase_evaluation",
+            False,
+            primary_finalized=False,
+            full_finalized=False,
+        ),
+        _record(
+            "qualified",
+            "paraphrase_evaluation",
+            False,
+            primary_finalized=False,
+            full_finalized=False,
+        ),
+    ]
+    for record in records:
+        record["grounded_correct"] = None
+        record["answer_correctness"] = "unresolved"
+
+    result = analyse_records(
+        experiment_id="EXP-1",
+        control_id="raw",
+        primary_metric="grounded_correct",
+        primary_role="paraphrase_evaluation",
+        records=records,
+        bootstrap_samples=20,
+    )
+
+    assert result["treatments"]["raw"]["count"] == 0
+    assert result["treatments"]["raw"]["rate"] is None
+    assert result["treatments"]["qualified"]["count"] == 0
+    assert result["treatments"]["qualified"]["rate"] is None
+    contrast = result["contrasts_from_control"]["qualified"]
+    assert contrast == {
+        "finalized_paired_count": 0,
+        "unresolved_paired_count": 1,
+        "control_rate": None,
+        "treatment_rate": None,
+        "paired_delta": None,
+    }
+    assert result["deltas_from_control"] == {}
+    assert result["comparable_pair_count"] == 0
+    assert result["primary_endpoint_unresolved_count"] == 2
+    assert result["full_evaluation_unresolved_count"] == 2
+    assert result["cluster_bootstrap"] == {
+        "cluster_field": None,
+        "samples": 0,
+        "effects": {},
+    }
+    assert result["interpretation_status"] == "human_review_required"
+
+
+def test_missing_control_records_still_fail_closed() -> None:
+    with pytest.raises(ValueError, match="primary outcome records for control raw"):
+        analyse_records(
+            experiment_id="EXP-1",
+            control_id="raw",
+            primary_metric="grounded_correct",
+            primary_role="paraphrase_evaluation",
+            records=[_record("qualified", "paraphrase_evaluation", True)],
+        )

@@ -61,6 +61,12 @@ correctness can be usable while source faithfulness still needs human review.
 The primary estimate keeps that usable endpoint and reports the broader
 unresolved count separately.
 
+If every declared primary endpoint is unresolved, analysis still reaches an
+honest terminal result: rates and deltas remain unavailable, comparable pairs
+remain zero, and the unresolved counts are preserved. A completely missing
+control arm still fails closed because that indicates a broken execution
+contract rather than an inconclusive evaluation.
+
 ## Ledger
 
 The Storage ledger contains immutable metadata and one known object per step
