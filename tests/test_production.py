@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -1032,6 +1033,68 @@ def test_preflight_fails_when_training_rejects_final_experiment_override(
     assert len(failed) == sum(step.operation == "train" for step in plan.steps)
     assert all(check.status == "failed" for check in failed)
     assert all(check.evidence["exit_code"] == 2 for check in failed)
+
+
+@pytest.mark.parametrize(
+    ("probe_source", "expected_status"),
+    [
+        (
+            "raise ModuleNotFoundError(\"No module named 'cognityx_observability'\")",
+            "failed",
+        ),
+        ("pass", "passed"),
+    ],
+)
+def test_preflight_probes_exact_local_inference_launch_environment(
+    tmp_path: Path,
+    research_spec: ResearchSpec,
+    probe_source: str,
+    expected_status: str,
+) -> None:
+    runtime = _runtime(tmp_path / "storage")
+    value = _frozen_spec(runtime, research_spec, tmp_path).to_dict()
+    profile = _put_manifest(
+        runtime,
+        "fixtures/inference/certified-profile.json",
+        {"schema": "cognityx.inference.certified-profile/v1"},
+    )
+    service = value["experiments"][0]["execution"]["inference"]["service"]
+    service.update(
+        {
+            "mode": "local_managed",
+            "command": [sys.executable, "-c", "pass"],
+            "probe_command": [sys.executable, "-c", probe_source],
+            "certified_profile_uri": profile["manifest_uri"],
+        }
+    )
+    spec = ResearchSpec.from_mapping(value)
+    logical = compile_logical_plan(spec)
+    identities = _identities()
+    plan = compile_execution_plan(logical, software_identities=identities)
+
+    result = ProductionPreflight(
+        runtime,
+        results_repository=_results_repository(tmp_path / "results"),
+        repository_visibility=lambda repository: "PRIVATE",
+        inference_probe=lambda base_url: {"base_url": base_url, "ready": True},
+        gpu_inventory=lambda: {"visible": True, "gpus": ["test-gpu"]},
+        training_contract_runner=_TrainingContractRunner(),
+        actual_software=identities,
+    ).run(spec, logical, plan)
+
+    launch = next(
+        check for check in result.checks if check.check == "local_inference_launch"
+    )
+    assert launch.status == expected_status
+    assert launch.evidence["launch_executable"] == Path(sys.executable).resolve().name
+    if expected_status == "passed":
+        assert launch.evidence["exit_code"] == 0
+        assert launch.evidence["success"] is True
+    else:
+        assert result.passed is False
+        assert "exit_status=1" in launch.detail
+        assert "cognityx_observability" not in launch.detail
+        assert launch.evidence["success"] is False
 
 
 def test_inference_http_adapter_uses_supported_context_and_owns_only_local_process(
