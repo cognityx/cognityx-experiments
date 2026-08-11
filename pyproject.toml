@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cognityx-experiments"
+version = "0.1.0"
+description = "Deterministic research specifications and experiment execution for Cognityx"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Cognityx" }]
+dependencies = [
+    "cognityx-observability",
+    "cognityx-resource",
+    "cognityx-storage",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+cognityx-experiments = "cognityx_experiments.cli:main"
+
+[dependency-groups]
+dev = [
+    "mkdocs-material>=9.7.7",
+    "mkdocstrings-python>=2.0.5",
+    "mypy>=1.17",
+    "pytest>=8",
+    "ruff>=0.12",
+]
+
+[tool.uv.sources]
+cognityx-observability = { git = "https://github.com/cognityx/cognityx-observability.git", rev = "08b3da3bc3c5defbf24d7e3d0b1142a298e0af7b" }
+cognityx-resource = { git = "https://github.com/cognityx/cognityx-resource.git", rev = "b23220b69fcb182e681cf13276c37474666c9bd2" }
+cognityx-storage = { git = "https://github.com/cognityx/cognityx-storage.git", rev = "4b47b898b2fb465263d8c44350d4241f52b13c90" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cognityx_experiments"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/cognityx_experiments"]
+check_untyped_defs = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+follow_imports = "skip"

@@ -1,0 +1,72 @@
+schema: cognityx.research.spec/v1
+research_area:
+  id: POLICY-KNOWLEDGE
+  title: Policy knowledge acquisition
+hypotheses:
+  - id: POLICY-H1
+    statement: Data qualification changes grounded answer correctness.
+    null_hypothesis: The declared treatments have the same grounded correctness.
+research_questions:
+  - id: POLICY-RQ1
+    hypothesis_id: POLICY-H1
+    question: What is the qualified-minus-control effect under the frozen setup?
+experiments:
+  - id: POLICY-EXP-001
+    addresses: [POLICY-RQ1]
+    recipe: training_treatment_comparison
+    design:
+      type: controlled_comparison
+      research_profile: factual_knowledge_acquisition
+      experimental_unit: stable policy fact group
+      treatments:
+        - id: control
+          role: control
+          inputs:
+            data_package_uri: storage://local-main/datasets/policy-control/v1/manifest.json
+            data_package_version: v1
+        - id: qualified
+          role: treatment
+          inputs:
+            data_package_uri: storage://local-main/datasets/policy-qualified/v1/manifest.json
+            data_package_version: v1
+      control: control
+      blocking_variables: [fact_group_id]
+      controlled_variables:
+        optimizer_family: adamw
+      seeds: [11, 29]
+      primary_outcome:
+        metric: grounded_correct
+        direction: higher_is_better
+      secondary_outcomes:
+        - metric: exact_recall
+      estimand:
+        type: average_treatment_effect
+        contrast: qualified-minus-control
+      stopping_rule:
+        type: fixed_replicates
+        replicates: 2
+      analysis_plan:
+        bootstrap_samples: 500
+        cluster_by: fact_group_id
+      resource_constraints:
+        local_gpu_count: 1
+      evaluation_suites:
+        - id: exact-recall-v1
+        - id: paraphrase-v1
+      declared_exclusions:
+        - rule: unresolved_candidate_pairs
+    execution:
+      model:
+        name: example/base-model
+        revision: 0123456789abcdef
+      dataforge:
+        package_contract: cognityx.dataforge.research-package/v1
+      training:
+        configuration_checksum: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      inference:
+        service:
+          mode: external
+        runtime_revision: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      evaluator:
+        plan_id: grounded-correct-evaluation/v1
+        plan_checksum: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
