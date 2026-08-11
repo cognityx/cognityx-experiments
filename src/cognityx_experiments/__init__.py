@@ -9,8 +9,10 @@ from cognityx_experiments.contracts import (
     Hypothesis,
     LogicalExperimentPlan,
     ResearchArea,
+    ResearchLineage,
     ResearchQuestion,
     ResearchSpec,
+    SoftwareIdentity,
 )
 from cognityx_experiments.executor import (
     ComponentGateway,
@@ -33,8 +35,10 @@ __all__ = [
     "Hypothesis",
     "LogicalExperimentPlan",
     "ResearchArea",
+    "ResearchLineage",
     "ResearchQuestion",
     "ResearchSpec",
+    "SoftwareIdentity",
     "analyse_records",
     "compile_execution_plan",
     "compile_logical_plan",

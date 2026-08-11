@@ -1,7 +1,7 @@
 from copy import deepcopy
 
 from cognityx_experiments.compiler import compile_execution_plan, compile_logical_plan
-from cognityx_experiments.contracts import ResearchSpec
+from cognityx_experiments.contracts import ResearchSpec, SoftwareIdentity
 from cognityx_experiments.mermaid import render_mermaid
 
 
@@ -58,3 +58,29 @@ def test_evaluator_method_recipe_compiles_as_explicitly_unsupported(
     assert plan.steps
     assert {step.status for step in plan.steps} == {"unsupported"}
     assert all("unsupported" in step.output_contract for step in plan.steps[:-1])
+
+
+def test_software_revision_is_frozen_into_execution_plan_checksum(
+    research_spec: ResearchSpec,
+) -> None:
+    logical = compile_logical_plan(research_spec)
+    identity = SoftwareIdentity(
+        component="cognityx-inference",
+        package_name="cognityx-inference",
+        package_version="0.1.0",
+        git_revision="a" * 40,
+        source="git",
+    )
+    changed = SoftwareIdentity(
+        component=identity.component,
+        package_name=identity.package_name,
+        package_version=identity.package_version,
+        git_revision="b" * 40,
+        source=identity.source,
+    )
+
+    first = compile_execution_plan(logical, software_identities=(identity,))
+    second = compile_execution_plan(logical, software_identities=(changed,))
+
+    assert first.software_identities == (identity,)
+    assert first.execution_plan_checksum != second.execution_plan_checksum

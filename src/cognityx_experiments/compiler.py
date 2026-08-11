@@ -14,6 +14,7 @@ from cognityx_experiments.contracts import (
     LogicalExperimentPlan,
     LogicalRun,
     ResearchSpec,
+    SoftwareIdentity,
 )
 
 _FACTUAL_INFERENCE_DEFAULTS: dict[str, Any] = {
@@ -79,8 +80,12 @@ def compile_execution_plan(
     logical: LogicalExperimentPlan,
     *,
     execution_id: str | None = None,
+    software_identities: tuple[SoftwareIdentity, ...] = (),
 ) -> ExecutionPlan:
     """Create a conservative topological schedule of known operations."""
+    components = [identity.component for identity in software_identities]
+    if len(components) != len(set(components)):
+        raise ValueError("software identities must contain one entry per component")
     selected_execution_id = execution_id or f"execution-{logical.plan_checksum[:20]}"
     steps: list[ExecutionStep] = []
     service_modes: set[str] = set()
@@ -132,6 +137,9 @@ def compile_execution_plan(
         plan_checksum=logical.plan_checksum,
         spec_checksum=logical.spec_checksum,
         inference_service=inference_service,
+        software_identities=tuple(
+            sorted(software_identities, key=lambda identity: identity.component)
+        ),
         steps=tuple(steps),
     )
 

@@ -1,4 +1,4 @@
-"""Cross-run treatment analysis owned by Experiments."""
+"""Role-aware, paired cross-treatment analysis owned by Experiments."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from statistics import mean
 from typing import Any
 
 from cognityx_experiments.canonical import plain
+from cognityx_experiments.contracts import EVALUATION_RESEARCH_ROLES
 
 ANALYSIS_SCHEMA = "cognityx.experiment.analysis/v1"
 
@@ -19,88 +20,67 @@ def analyse_records(
     control_id: str,
     primary_metric: str,
     records: Sequence[Mapping[str, Any]],
+    primary_role: str | None = None,
     bootstrap_samples: int = 500,
     bootstrap_seed: int = 0,
 ) -> dict[str, Any]:
-    """Compute descriptive effects without declaring a hypothesis proven."""
-    normalized = [plain(record) for record in records]
+    """Estimate treatment effects from paired saved-adapter endpoints only."""
+    normalized = [_normalize_record(record) for record in records]
+    selected_role = _resolve_primary_role(normalized, primary_role)
+    role_records = [
+        record for record in normalized if record.get("research_role") == selected_role
+    ]
     finalized = [
         record
-        for record in normalized
-        if record.get("status", "finalized") == "finalized"
+        for record in role_records
+        if _primary_finalized(record)
         and _numeric_metric(record, primary_metric) is not None
     ]
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    for record in finalized:
-        grouped[
-            (str(record["treatment_id"]), str(record.get("role") or "unspecified"))
-        ].append(record)
-    treatment_summary: dict[str, Any] = {}
-    for treatment_id in sorted({key[0] for key in grouped}):
-        selected = [
-            record
-            for (arm, _), grouped_records in grouped.items()
-            if arm == treatment_id
-            for record in grouped_records
-        ]
-        role_summary: dict[str, Any] = {}
-        for (arm, role), role_records in sorted(grouped.items()):
-            if arm != treatment_id:
-                continue
-            metrics = [
-                _numeric_metric(record, primary_metric) for record in role_records
-            ]
-            role_summary[role] = {
-                "count": len(metrics),
-                "rate": mean(value for value in metrics if value is not None),
-            }
-        treatment_values = [
-            _numeric_metric(record, primary_metric) for record in selected
-        ]
-        treatment_summary[treatment_id] = {
-            "count": len(treatment_values),
-            "rate": mean(value for value in treatment_values if value is not None),
-            "by_role": role_summary,
+    if not any(str(record.get("treatment_id")) == control_id for record in finalized):
+        raise ValueError(
+            f"No finalized {selected_role} primary outcomes for control {control_id}"
+        )
+
+    treatment_ids = sorted(
+        {
+            str(record["treatment_id"])
+            for record in role_records
+            if record.get("treatment_id") is not None
         }
-    if control_id not in treatment_summary:
-        raise ValueError(f"No finalized primary outcomes for control {control_id}")
-    control_rate = float(treatment_summary[control_id]["rate"])
-    deltas = {
-        treatment_id: float(summary["rate"]) - control_rate
-        for treatment_id, summary in treatment_summary.items()
+    )
+    treatment_summary = {
+        treatment_id: _treatment_summary(
+            finalized, treatment_id=treatment_id, metric=primary_metric
+        )
+        for treatment_id in treatment_ids
+    }
+    contrasts = {
+        treatment_id: _paired_contrast(
+            role_records,
+            control_id=control_id,
+            treatment_id=treatment_id,
+            metric=primary_metric,
+        )
+        for treatment_id in treatment_ids
         if treatment_id != control_id
     }
-    per_seed: dict[str, dict[str, float]] = {}
-    for seed in sorted({int(record["seed"]) for record in finalized}):
-        seed_records = [record for record in finalized if int(record["seed"]) == seed]
-        control_values = [
-            value
-            for record in seed_records
-            if str(record["treatment_id"]) == control_id
-            if (value := _numeric_metric(record, primary_metric)) is not None
-        ]
-        if not control_values:
-            continue
-        arm_effects: dict[str, float] = {}
-        for treatment_id in sorted(
-            {str(record["treatment_id"]) for record in seed_records}
-        ):
-            if treatment_id == control_id:
-                continue
-            arm_values = [
-                value
-                for record in seed_records
-                if str(record["treatment_id"]) == treatment_id
-                if (value := _numeric_metric(record, primary_metric)) is not None
-            ]
-            if arm_values:
-                arm_effects[treatment_id] = mean(arm_values) - mean(control_values)
-        per_seed[str(seed)] = arm_effects
-    cluster_bootstrap: dict[str, Any] = {}
+    deltas = {
+        treatment_id: float(contrast["paired_delta"])
+        for treatment_id, contrast in contrasts.items()
+        if contrast["paired_delta"] is not None
+    }
+    per_seed = _per_seed_effects(
+        role_records,
+        control_id=control_id,
+        treatment_ids=tuple(contrasts),
+        metric=primary_metric,
+    )
+
     cluster_field = _cluster_field(finalized)
+    bootstrap_effects: dict[str, Any] = {}
     if cluster_field:
-        for treatment_id in deltas:
-            cluster_bootstrap[treatment_id] = _bootstrap_delta(
+        for treatment_id in contrasts:
+            bootstrap_effects[treatment_id] = _bootstrap_delta(
                 finalized,
                 control_id=control_id,
                 treatment_id=treatment_id,
@@ -109,31 +89,53 @@ def analyse_records(
                 samples=bootstrap_samples,
                 seed=bootstrap_seed,
             )
-    unresolved = sum(record.get("status") != "finalized" for record in normalized)
-    comparable = sum(bool(record.get("comparable", True)) for record in finalized)
-    exact_roles = {"exact_recall", "exact-recall"}
-    paraphrase_roles = {"paraphrase", "generalization"}
+
+    diagnostic_records = [
+        record
+        for record in normalized
+        if _primary_finalized(record)
+        and _numeric_metric(record, primary_metric) is not None
+    ]
     role_diagnostics = {
-        "exact_recall": _role_rates(finalized, primary_metric, exact_roles),
-        "paraphrase_generalization": _role_rates(
-            finalized, primary_metric, paraphrase_roles
-        ),
+        role: _role_rates(diagnostic_records, primary_metric, {role})
+        for role in sorted(EVALUATION_RESEARCH_ROLES)
     }
+    role_diagnostics["generalization"] = _role_rates(
+        diagnostic_records,
+        primary_metric,
+        {"paraphrase_evaluation", "heldout_knowledge_unit"},
+    )
+    primary_unresolved = sum(
+        not _primary_finalized(record)
+        or _numeric_metric(record, primary_metric) is None
+        for record in role_records
+    )
+    full_unresolved = sum(
+        not bool(record.get("full_evaluation_finalized")) for record in role_records
+    )
+    finalized_pair_count = sum(
+        int(contrast["finalized_paired_count"]) for contrast in contrasts.values()
+    )
     return {
         "schema": ANALYSIS_SCHEMA,
         "experiment_id": experiment_id,
         "primary_metric": primary_metric,
+        "primary_role": selected_role,
         "control_id": control_id,
         "treatments": treatment_summary,
+        "contrasts_from_control": contrasts,
         "deltas_from_control": deltas,
         "per_seed_effects": per_seed,
-        "comparable_pair_count": comparable,
-        "unresolved_count": unresolved,
+        "comparable_pair_count": finalized_pair_count,
+        "unresolved_count": primary_unresolved,
+        "primary_endpoint_unresolved_count": primary_unresolved,
+        "full_evaluation_unresolved_count": full_unresolved,
         "role_diagnostics": role_diagnostics,
+        "secondary_role_summaries": role_diagnostics,
         "cluster_bootstrap": {
             "cluster_field": cluster_field,
             "samples": bootstrap_samples if cluster_field else 0,
-            "effects": cluster_bootstrap,
+            "effects": bootstrap_effects,
         },
         "resources": _sum_mapping(normalized, "resources"),
         "semantic_judge_invocation_cost": sum(
@@ -144,8 +146,53 @@ def analyse_records(
     }
 
 
+def _normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    selected = plain(record)
+    role = selected.get("research_role") or selected.get("role")
+    if role is not None and str(role) not in EVALUATION_RESEARCH_ROLES:
+        raise ValueError(f"Unsupported evaluation research role: {role}")
+    selected["research_role"] = str(role) if role is not None else None
+    if "primary_endpoint_finalized" not in selected:
+        selected["primary_endpoint_finalized"] = (
+            selected.get("status", "finalized") == "finalized"
+        )
+    if "full_evaluation_finalized" not in selected:
+        selected["full_evaluation_finalized"] = (
+            selected.get("status", "finalized") == "finalized"
+        )
+    return selected
+
+
+def _resolve_primary_role(
+    records: Sequence[Mapping[str, Any]], requested: str | None
+) -> str:
+    if requested is not None:
+        if requested not in EVALUATION_RESEARCH_ROLES:
+            raise ValueError(f"Unsupported primary outcome role: {requested}")
+        return requested
+    roles = {
+        str(record["research_role"])
+        for record in records
+        if record.get("research_role") is not None
+    }
+    if len(roles) == 1:
+        return next(iter(roles))
+    if len(roles) > 1:
+        raise ValueError(
+            "Primary outcome role is ambiguous across evaluation research roles: "
+            + ", ".join(sorted(roles))
+        )
+    raise ValueError("No canonical evaluation research role is available")
+
+
+def _primary_finalized(record: Mapping[str, Any]) -> bool:
+    return bool(record.get("primary_endpoint_finalized"))
+
+
 def _numeric_metric(record: Mapping[str, Any], metric: str) -> float | None:
-    value = (record.get("metrics") or {}).get(metric)
+    value = record.get(metric)
+    if value is None:
+        value = (record.get("metrics") or {}).get(metric)
     if isinstance(value, bool):
         return float(value)
     if isinstance(value, (int, float)):
@@ -153,13 +200,115 @@ def _numeric_metric(record: Mapping[str, Any], metric: str) -> float | None:
     return None
 
 
+def _treatment_summary(
+    records: Sequence[Mapping[str, Any]], *, treatment_id: str, metric: str
+) -> dict[str, Any]:
+    values = [
+        value
+        for record in records
+        if str(record.get("treatment_id")) == treatment_id
+        if (value := _numeric_metric(record, metric)) is not None
+    ]
+    return {"count": len(values), "rate": mean(values) if values else None}
+
+
+def _pair_key(record: Mapping[str, Any]) -> tuple[int, str]:
+    if record.get("seed") is None or not record.get("evaluation_record_id"):
+        raise ValueError(
+            "Paired analysis records require seed and evaluation_record_id"
+        )
+    return int(record["seed"]), str(record["evaluation_record_id"])
+
+
+def _arm_records(
+    records: Sequence[Mapping[str, Any]], treatment_id: str
+) -> dict[tuple[int, str], Mapping[str, Any]]:
+    selected: dict[tuple[int, str], Mapping[str, Any]] = {}
+    for record in records:
+        if str(record.get("treatment_id")) != treatment_id:
+            continue
+        key = _pair_key(record)
+        if key in selected:
+            raise ValueError(
+                "Duplicate analysis endpoint for treatment, seed, and "
+                f"evaluation_record_id: {treatment_id} {key}"
+            )
+        selected[key] = record
+    return selected
+
+
+def _paired_contrast(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    control_id: str,
+    treatment_id: str,
+    metric: str,
+) -> dict[str, Any]:
+    control = _arm_records(records, control_id)
+    treatment = _arm_records(records, treatment_id)
+    all_keys = set(control) | set(treatment)
+    paired_values: list[tuple[float, float]] = []
+    for key in sorted(set(control) & set(treatment)):
+        control_record = control[key]
+        treatment_record = treatment[key]
+        control_value = _numeric_metric(control_record, metric)
+        treatment_value = _numeric_metric(treatment_record, metric)
+        if (
+            _primary_finalized(control_record)
+            and _primary_finalized(treatment_record)
+            and control_value is not None
+            and treatment_value is not None
+        ):
+            paired_values.append((control_value, treatment_value))
+    finalized_keys = len(paired_values)
+    control_rate = mean(value[0] for value in paired_values) if paired_values else None
+    treatment_rate = (
+        mean(value[1] for value in paired_values) if paired_values else None
+    )
+    return {
+        "finalized_paired_count": finalized_keys,
+        "unresolved_paired_count": len(all_keys) - finalized_keys,
+        "control_rate": control_rate,
+        "treatment_rate": treatment_rate,
+        "paired_delta": (
+            treatment_rate - control_rate
+            if treatment_rate is not None and control_rate is not None
+            else None
+        ),
+    }
+
+
+def _per_seed_effects(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    control_id: str,
+    treatment_ids: tuple[str, ...],
+    metric: str,
+) -> dict[str, dict[str, float]]:
+    result: dict[str, dict[str, float]] = {}
+    for seed in sorted({int(record["seed"]) for record in records}):
+        selected = [record for record in records if int(record["seed"]) == seed]
+        effects: dict[str, float] = {}
+        for treatment_id in treatment_ids:
+            contrast = _paired_contrast(
+                selected,
+                control_id=control_id,
+                treatment_id=treatment_id,
+                metric=metric,
+            )
+            if contrast["paired_delta"] is not None:
+                effects[treatment_id] = float(contrast["paired_delta"])
+        result[str(seed)] = effects
+    return result
+
+
 def _role_rates(
     records: Sequence[Mapping[str, Any]], metric: str, roles: set[str]
 ) -> dict[str, Any]:
-    selected = [record for record in records if str(record.get("role")) in roles]
     values = [
         value
-        for record in selected
+        for record in records
+        if str(record.get("research_role")) in roles
         if (value := _numeric_metric(record, metric)) is not None
     ]
     return {"count": len(values), "rate": mean(values) if values else None}
@@ -187,25 +336,23 @@ def _bootstrap_delta(
         if str(record["treatment_id"]) in {control_id, treatment_id}:
             by_cluster[str(record[cluster_field])].append(record)
     clusters = sorted(by_cluster)
+    cluster_effects: dict[str, float] = {}
+    for cluster in clusters:
+        contrast = _paired_contrast(
+            by_cluster[cluster],
+            control_id=control_id,
+            treatment_id=treatment_id,
+            metric=metric,
+        )
+        if contrast["paired_delta"] is not None:
+            cluster_effects[cluster] = float(contrast["paired_delta"])
+    resolved_clusters = sorted(cluster_effects)
     effects: list[float] = []
     generator = random.Random(seed)
     for _ in range(samples):
-        sampled = [generator.choice(clusters) for _ in clusters]
-        selected = [record for cluster in sampled for record in by_cluster[cluster]]
-        control = [
-            value
-            for record in selected
-            if str(record["treatment_id"]) == control_id
-            if (value := _numeric_metric(record, metric)) is not None
-        ]
-        treatment = [
-            value
-            for record in selected
-            if str(record["treatment_id"]) == treatment_id
-            if (value := _numeric_metric(record, metric)) is not None
-        ]
-        if control and treatment:
-            effects.append(mean(treatment) - mean(control))
+        if resolved_clusters:
+            sampled = [generator.choice(resolved_clusters) for _ in resolved_clusters]
+            effects.append(mean(float(cluster_effects[cluster]) for cluster in sampled))
     effects.sort()
     if not effects:
         return {"cluster_count": len(clusters), "estimate": None, "interval_95": None}

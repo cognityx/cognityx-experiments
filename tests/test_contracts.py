@@ -39,3 +39,28 @@ def test_experiment_can_address_multiple_questions(research_spec: ResearchSpec) 
     value["experiments"][0]["addresses"].append("POLICY-RQ2")
     parsed = ResearchSpec.from_mapping(value)
     assert parsed.experiments[0].addresses == ("POLICY-RQ1", "POLICY-RQ2")
+
+
+def test_optional_research_lineage_participates_in_checksum(
+    research_spec: ResearchSpec,
+) -> None:
+    value = research_spec.to_dict()
+    without_lineage = deepcopy(value)
+    without_lineage.pop("lineage")
+
+    assert research_spec.lineage is not None
+    assert research_spec.lineage.research_role == "confirmatory"
+    assert (
+        ResearchSpec.from_mapping(without_lineage).spec_checksum
+        != research_spec.spec_checksum
+    )
+
+
+def test_multiple_declared_roles_require_primary_role(
+    research_spec: ResearchSpec,
+) -> None:
+    value = research_spec.to_dict()
+    value["experiments"][0]["design"]["primary_outcome"].pop("role")
+
+    with pytest.raises(ValueError, match="primary_outcome.role"):
+        ResearchSpec.from_mapping(value)

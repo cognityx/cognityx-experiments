@@ -12,7 +12,12 @@ from cognityx_storage import StorageConfig, StorageRuntime
 
 from cognityx_experiments.canonical import load_yaml
 from cognityx_experiments.compiler import compile_execution_plan, compile_logical_plan
-from cognityx_experiments.contracts import ExecutionPlan, ExecutionStep, ResearchSpec
+from cognityx_experiments.contracts import (
+    ExecutionPlan,
+    ExecutionStep,
+    ResearchSpec,
+    SoftwareIdentity,
+)
 from cognityx_experiments.executor import DryRunGateway, ExperimentExecutor
 from cognityx_experiments.ledger import ExperimentLedger
 from cognityx_experiments.mermaid import render_mermaid
@@ -132,5 +137,9 @@ def _execution_plan(value: dict[str, Any]) -> ExecutionPlan:
         plan_checksum=str(value["plan_checksum"]),
         spec_checksum=str(value["spec_checksum"]),
         inference_service=dict(value["inference_service"]),
+        software_identities=tuple(
+            SoftwareIdentity.from_mapping(item)
+            for item in value.get("software_identities") or []
+        ),
         steps=steps,
     )

@@ -15,6 +15,19 @@ EXECUTION_PLAN_SCHEMA = "cognityx.experiment.execution-plan/v1"
 TRAINING_RECIPE = "training_treatment_comparison"
 EVALUATOR_RECIPE = "evaluator_method_comparison"
 KNOWN_RECIPES = frozenset({TRAINING_RECIPE, EVALUATOR_RECIPE})
+EVALUATION_RESEARCH_ROLES = frozenset(
+    {"exact_recall", "paraphrase_evaluation", "heldout_knowledge_unit"}
+)
+RESEARCH_ROLES = frozenset({"confirmatory", "exploratory"})
+RESULT_CHANGING_COMPONENTS = frozenset(
+    {
+        "cognityx-experiments",
+        "cognityx-dataforge",
+        "cognityx-training",
+        "cognityx-inference",
+        "cognityx-evaluator",
+    }
+)
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
@@ -119,6 +132,28 @@ class Outcome:
 
 
 @dataclass(frozen=True, slots=True)
+class ResearchLineage:
+    """Optional human-declared ancestry for a new immutable research spec."""
+
+    parent_spec_id: str | None = None
+    parent_execution_id: str | None = None
+    derived_from_finding_ids: tuple[str, ...] = ()
+    research_role: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in {
+                "parent_spec_id": self.parent_spec_id,
+                "parent_execution_id": self.parent_execution_id,
+                "derived_from_finding_ids": list(self.derived_from_finding_ids),
+                "research_role": self.research_role,
+            }.items()
+            if value not in (None, [])
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Treatment:
     treatment_id: str
     role: str
@@ -204,6 +239,7 @@ class ResearchSpec:
     hypotheses: tuple[Hypothesis, ...]
     research_questions: tuple[ResearchQuestion, ...]
     experiments: tuple[Experiment, ...]
+    lineage: ResearchLineage | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
     schema: str = RESEARCH_SPEC_SCHEMA
 
@@ -236,11 +272,13 @@ class ResearchSpec:
             _parse_experiment(item)
             for item in _items(value.get("experiments"), "experiments")
         )
+        lineage = _parse_lineage(value.get("lineage"))
         spec = cls(
             research_area=area,
             hypotheses=hypotheses,
             research_questions=questions,
             experiments=experiments,
+            lineage=lineage,
             metadata=_mapping(value.get("metadata"), "metadata"),
         )
         spec.validate()
@@ -283,6 +321,7 @@ class ResearchSpec:
                 value.to_dict() for value in self.research_questions
             ],
             "experiments": [value.to_dict() for value in self.experiments],
+            **({"lineage": self.lineage.to_dict()} if self.lineage else {}),
             "metadata": plain(self.metadata),
         }
 
@@ -371,11 +410,46 @@ class ExecutionStep:
 
 
 @dataclass(frozen=True, slots=True)
+class SoftwareIdentity:
+    """Exact installed component identity that can change scientific results."""
+
+    component: str
+    package_name: str
+    package_version: str
+    git_revision: str
+    source: str
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> SoftwareIdentity:
+        return cls(
+            component=_identifier(value.get("component"), "software.component"),
+            package_name=_identifier(
+                value.get("package_name"), "software.package_name"
+            ),
+            package_version=_required(
+                value.get("package_version"), "software.package_version"
+            ),
+            git_revision=_required(value.get("git_revision"), "software.git_revision"),
+            source=_required(value.get("source"), "software.source"),
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "component": self.component,
+            "package_name": self.package_name,
+            "package_version": self.package_version,
+            "git_revision": self.git_revision,
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionPlan:
     execution_id: str
     plan_checksum: str
     spec_checksum: str
     inference_service: Mapping[str, Any]
+    software_identities: tuple[SoftwareIdentity, ...]
     steps: tuple[ExecutionStep, ...]
     schema: str = EXECUTION_PLAN_SCHEMA
 
@@ -386,6 +460,9 @@ class ExecutionPlan:
             "plan_checksum": self.plan_checksum,
             "spec_checksum": self.spec_checksum,
             "inference_service": plain(self.inference_service),
+            "software_identities": [
+                identity.to_dict() for identity in self.software_identities
+            ],
             "steps": [step.to_dict() for step in self.steps],
         }
 
@@ -423,9 +500,12 @@ def _parse_question(value: Mapping[str, Any]) -> ResearchQuestion:
 
 def _parse_outcome(value: Any, name: str) -> Outcome:
     selected = _mapping(value, name)
+    role = str(selected["role"]) if selected.get("role") else None
+    if role is not None and role not in EVALUATION_RESEARCH_ROLES:
+        raise ValueError(f"Unsupported {name}.role: {role}")
     return Outcome(
         metric=_identifier(selected.get("metric"), f"{name}.metric"),
-        role=str(selected["role"]) if selected.get("role") else None,
+        role=role,
         direction=str(selected["direction"]) if selected.get("direction") else None,
         aggregation=str(selected["aggregation"])
         if selected.get("aggregation")
@@ -531,6 +611,22 @@ def _parse_experiment(value: Mapping[str, Any]) -> Experiment:
             else None
         ),
     )
+    declared_roles = {
+        str(suite.get("research_role") or suite.get("role"))
+        for suite in design.evaluation_suites
+        if suite.get("research_role") or suite.get("role")
+    }
+    unsupported_roles = declared_roles - EVALUATION_RESEARCH_ROLES
+    if unsupported_roles:
+        raise ValueError(
+            "Unsupported evaluation research roles: "
+            + ", ".join(sorted(unsupported_roles))
+        )
+    if design.primary_outcome.role is None and len(declared_roles) > 1:
+        raise ValueError(
+            "design.primary_outcome.role is required when multiple evaluation "
+            "research roles are declared"
+        )
     return Experiment(
         experiment_id=experiment_id,
         addresses=addresses,
@@ -545,3 +641,32 @@ def _unique(values: Sequence[str], name: str) -> set[str]:
     if len(selected) != len(values):
         raise ValueError(f"Duplicate {name} ID")
     return selected
+
+
+def _parse_lineage(value: Any) -> ResearchLineage | None:
+    if value is None:
+        return None
+    selected = _mapping(value, "lineage")
+    role = str(selected["research_role"]) if selected.get("research_role") else None
+    if role is not None and role not in RESEARCH_ROLES:
+        raise ValueError(f"Unsupported lineage.research_role: {role}")
+    finding_ids = selected.get("derived_from_finding_ids") or []
+    if not isinstance(finding_ids, Sequence) or isinstance(finding_ids, str):
+        raise ValueError("lineage.derived_from_finding_ids must be a list")
+    return ResearchLineage(
+        parent_spec_id=(
+            _identifier(selected["parent_spec_id"], "lineage.parent_spec_id")
+            if selected.get("parent_spec_id")
+            else None
+        ),
+        parent_execution_id=(
+            _identifier(selected["parent_execution_id"], "lineage.parent_execution_id")
+            if selected.get("parent_execution_id")
+            else None
+        ),
+        derived_from_finding_ids=tuple(
+            _identifier(item, "lineage.derived_from_finding_ids")
+            for item in finding_ids
+        ),
+        research_role=role,
+    )

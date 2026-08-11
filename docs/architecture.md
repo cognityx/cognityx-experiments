@@ -30,3 +30,10 @@ The current executor is conservative and synchronous. It groups all training
 before one shared inference-service window, so compatible adapters can reuse a
 resident base model. Component gateways are typed and operation-specific; this
 is not a general Python workflow or plugin engine.
+
+Cross-treatment analysis happens only after Evaluator has scored each saved
+adapter candidate. Inference still compares each adapter with the common base
+model to check that pair, but Experiments compares treatment adapters with one
+another using the same frozen evaluation record and seed. Canonical research
+roles remain separate, and exact recall is displayed as a diagnostic rather
+than blended into a generalization endpoint.

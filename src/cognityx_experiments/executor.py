@@ -311,6 +311,7 @@ class ExperimentExecutor:
             experiment_id=step.experiment_id,
             control_id=str(step.input_references["control"]),
             primary_metric=str(outcome["metric"]),
+            primary_role=(str(outcome["role"]) if outcome.get("role") else None),
             records=records,
             bootstrap_samples=int(
                 (step.input_references.get("analysis_plan") or {}).get(
@@ -419,18 +420,34 @@ class DryRunGateway:
         value = {"control": 0.5, "treatment": 0.75, "comparator": 0.625}[treatment_role]
         records = tuple(
             {
-                "record_id": f"{step.step_id}:{role}",
+                "evaluation_record_id": f"synthetic-{step.seed}-{role}",
                 "treatment_id": step.treatment_id,
                 "seed": step.seed,
-                "role": role,
-                "status": "finalized",
-                "comparable": True,
+                "research_role": role,
+                "grounded_correct": value,
+                "primary_endpoint_finalized": True,
+                "full_evaluation_finalized": True,
+                "answer_correctness": True,
+                "required_fact_completeness": True,
+                "fatal_contradiction": False,
+                "source_faithfulness": True,
+                "generation_status": "completed",
+                "evaluator_status": "finalized",
                 "knowledge_unit_id": f"synthetic-unit-{index}",
+                "fact_group_id": f"synthetic-fact-{index}",
+                "document_id": "synthetic-document",
                 "metrics": {metric: value},
                 "resources": {"synthetic_cost_units": 1},
                 "semantic_judge_invocation_cost": 0,
             }
-            for index, role in enumerate(("exact_recall", "paraphrase"), start=1)
+            for index, role in enumerate(
+                (
+                    "exact_recall",
+                    "paraphrase_evaluation",
+                    "heldout_knowledge_unit",
+                ),
+                start=1,
+            )
         )
         return ComponentResult(
             manifest_uri=result.manifest_uri,
