@@ -36,9 +36,11 @@ def analyse_records(
         if _primary_finalized(record)
         and _numeric_metric(record, primary_metric) is not None
     ]
-    if not any(str(record.get("treatment_id")) == control_id for record in finalized):
+    if not any(
+        str(record.get("treatment_id")) == control_id for record in role_records
+    ):
         raise ValueError(
-            f"No finalized {selected_role} primary outcomes for control {control_id}"
+            f"No {selected_role} primary outcome records for control {control_id}"
         )
 
     treatment_ids = sorted(
