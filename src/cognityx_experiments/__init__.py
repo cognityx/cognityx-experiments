@@ -24,6 +24,12 @@ from cognityx_experiments.executor import (
 from cognityx_experiments.ledger import ExperimentLedger
 from cognityx_experiments.mermaid import render_mermaid
 from cognityx_experiments.pipeline import ResearchMaterialPipeline
+from cognityx_experiments.preflight import (
+    PreflightCheck,
+    PreflightResult,
+    ProductionPreflight,
+)
+from cognityx_experiments.production import CognityxComponentGateway
 from cognityx_experiments.publication import (
     GitResearchPublisher,
     PublicationPolicy,
@@ -34,6 +40,7 @@ from cognityx_experiments.publication import (
 __all__ = [
     "ComponentGateway",
     "ComponentResult",
+    "CognityxComponentGateway",
     "DryRunGateway",
     "ExecutionPlan",
     "ExecutionStep",
@@ -44,6 +51,9 @@ __all__ = [
     "Hypothesis",
     "LogicalExperimentPlan",
     "PublicationPolicy",
+    "PreflightCheck",
+    "PreflightResult",
+    "ProductionPreflight",
     "ResearchArea",
     "ResearchLineage",
     "ResearchQuestion",
