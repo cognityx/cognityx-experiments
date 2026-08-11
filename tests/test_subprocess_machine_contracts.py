@@ -15,6 +15,7 @@ def test_installed_component_commands_emit_one_json_object() -> None:
     encoded = os.environ.get("COGNITYX_SUBPROCESS_CONTRACT_COMMANDS")
     if encoded is None:
         pytest.skip("installed component contract commands were not supplied")
+    assert encoded is not None
     specifications = json.loads(encoded)
     assert isinstance(specifications, list)
     assert {item["component"] for item in specifications} == {
