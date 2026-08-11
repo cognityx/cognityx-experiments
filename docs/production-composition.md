@@ -113,7 +113,10 @@ Each expensive step has a stable identity derived from the frozen inputs. A
 completed step is written to the Storage ledger before the next step starts.
 On `--resume`, completed DataForge, Training, Inference-pair, and Evaluator work
 is reused. Narrative generation and Git push are separate from scientific
-completion, so either can be retried without rerunning the science.
+completion, so either can be retried without rerunning the science. When an
+immutable snapshot is already present, its receipt continues to name the Git
+commit that originally published that snapshot even if later snapshots have
+advanced the results repository.
 
 The gateway contract tests exercise the real Storage verifier and Git journal
 with injected component clients. They cover a complete 33-step two-treatment,
