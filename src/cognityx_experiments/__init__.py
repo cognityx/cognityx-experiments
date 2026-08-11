@@ -1,5 +1,6 @@
 """Deterministic research planning and experiment execution."""
 
+from cognityx_experiments.aggregation import paper_material, research_summary
 from cognityx_experiments.analysis import analyse_records
 from cognityx_experiments.compiler import compile_execution_plan, compile_logical_plan
 from cognityx_experiments.contracts import (
@@ -22,6 +23,12 @@ from cognityx_experiments.executor import (
 )
 from cognityx_experiments.ledger import ExperimentLedger
 from cognityx_experiments.mermaid import render_mermaid
+from cognityx_experiments.pipeline import ResearchMaterialPipeline
+from cognityx_experiments.publication import (
+    GitResearchPublisher,
+    Snapshot,
+    build_snapshot,
+)
 
 __all__ = [
     "ComponentGateway",
@@ -32,6 +39,7 @@ __all__ = [
     "Experiment",
     "ExperimentExecutor",
     "ExperimentLedger",
+    "GitResearchPublisher",
     "Hypothesis",
     "LogicalExperimentPlan",
     "ResearchArea",
@@ -39,8 +47,13 @@ __all__ = [
     "ResearchQuestion",
     "ResearchSpec",
     "SoftwareIdentity",
+    "ResearchMaterialPipeline",
+    "Snapshot",
     "analyse_records",
     "compile_execution_plan",
     "compile_logical_plan",
+    "build_snapshot",
+    "paper_material",
     "render_mermaid",
+    "research_summary",
 ]

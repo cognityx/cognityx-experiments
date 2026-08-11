@@ -10,6 +10,7 @@ from typing import Any
 from cognityx_resource import ExecutionContext, ResourceContext
 from cognityx_storage import StorageConfig, StorageRuntime
 
+from cognityx_experiments.aggregation import paper_material, research_summary
 from cognityx_experiments.canonical import load_yaml
 from cognityx_experiments.compiler import compile_execution_plan, compile_logical_plan
 from cognityx_experiments.contracts import (
@@ -39,12 +40,28 @@ def build_parser() -> argparse.ArgumentParser:
     status = commands.add_parser("status")
     status.add_argument("execution_id")
     status.add_argument("--storage-root", type=Path, default=Path("experiment-storage"))
+    for name in ("research-summary", "paper-material"):
+        command = commands.add_parser(name)
+        command.add_argument("target")
+        command.add_argument("--results-repo", type=Path, required=True)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "research-summary":
+        print(research_summary(args.results_repo, args.target), end="")
+        return 0
+    if args.command == "paper-material":
+        print(
+            json.dumps(
+                paper_material(args.results_repo, args.target),
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
     if args.command == "status":
         ledger = ExperimentLedger(_store(args.storage_root), args.execution_id)
         plan = _execution_plan(ledger.load_execution_plan())

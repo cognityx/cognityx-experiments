@@ -8,6 +8,9 @@ nav:
   - Contracts: contracts.md
   - Jobs decision: jobs-integration.md
   - Component idempotency audit: component-idempotency.md
+  - Research publication: research-publication.md
+  - Research materials: research-materials.md
+  - Future Research Agent: future-research-agent.md
   - CLI: cli.md
 plugins:
   - search

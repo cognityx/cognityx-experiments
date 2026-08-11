@@ -6,6 +6,8 @@ cognityx-experiments plan RESEARCH.yaml
 cognityx-experiments show-plan RESEARCH.yaml
 cognityx-experiments run RESEARCH.yaml --dry-run [--resume]
 cognityx-experiments status EXECUTION_ID --storage-root PATH
+cognityx-experiments research-summary HYPOTHESIS_OR_RQ --results-repo PATH
+cognityx-experiments paper-material HYPOTHESIS_OR_RQ --results-repo PATH
 ```
 
 `validate` checks the hierarchy and controlled design. `plan` prints both
@@ -16,3 +18,9 @@ the execution schedule.
 Storage ledger, observability, and resume behavior without invoking a model or
 creating scientific evidence. Production callers construct the executor with
 typed DataForge, Training, Inference, and Evaluator gateways.
+
+`research-summary` reads immutable finding objects and groups supportive,
+contradictory, inconclusive, and unresolved evidence. `paper-material` assembles
+methods-ready experiment IDs, factual Results paragraphs, tables, figure data,
+negative results, limitations, and provenance references. Neither command
+generates a final paper.

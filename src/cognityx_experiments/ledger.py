@@ -168,6 +168,12 @@ class ExperimentLedger:
         return stored.uri, digest
 
     def finalize(self, plan: ExecutionPlan) -> dict[str, Any]:
+        terminal_key = f"{self.root}/ledger-completed.json"
+        if self.store.exists(terminal_key):
+            return {
+                **self._read(terminal_key),
+                "ledger_uri": self.store.uri(terminal_key),
+            }
         statuses = self.status(plan)
         if statuses["pending_count"]:
             raise RuntimeError("Cannot finalize an execution with pending steps")
@@ -180,9 +186,7 @@ class ExperimentLedger:
             "unsupported_count": statuses["unsupported_count"],
             "completed_at": _now(),
         }
-        stored = self.store.put_json_idempotent(
-            f"{self.root}/ledger-completed.json", payload
-        )
+        stored = self.store.put_json_idempotent(terminal_key, payload)
         return {**payload, "ledger_uri": stored.uri}
 
     def status(self, plan: ExecutionPlan) -> dict[str, Any]:
