@@ -1,0 +1,18 @@
+site_name: Cognityx Experiments
+site_description: Deterministic research specifications and experiment execution
+theme:
+  name: material
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Contracts: contracts.md
+  - Jobs decision: jobs-integration.md
+  - Component idempotency audit: component-idempotency.md
+  - CLI: cli.md
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+strict: true
