@@ -14,7 +14,9 @@ cognityx-experiments preflight research.yaml \
 
 This returns a structured checklist for the research plan, installed software,
 Storage inputs, Inference service, GPU requirement, observation backend,
-budget, and private Git journal. It may inspect a GPU inventory, but it does not
+budget, and the policy-gated Git journal. Its output records the observed
+repository visibility, frozen publication policy and data classification, and
+effective content projection. It may inspect a GPU inventory, but it does not
 load a model or start training. Any failed item makes the command return a
 non-zero status.
 
@@ -37,7 +39,9 @@ preregistration or invokes a component. `--resume` reuses an immutable
 completed-step record and retries only work that did not complete. The
 publisher accepts only the expected results repository, requires a clean
 worktree, stages an exact file list, and uses a fast-forward-only update before
-a push.
+a push. Repository identity, public-summary permission, and data classification
+come from the frozen research YAML; there is no command-line option that can
+weaken them.
 
 Use `--dry-run` only to check the shape of an experiment. Dry-run records are
 marked synthetic and are not scientific evidence.

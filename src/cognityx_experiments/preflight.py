@@ -21,6 +21,7 @@ from cognityx_experiments.contracts import (
     SoftwareIdentity,
 )
 from cognityx_experiments.production import JsonHttpTransport, StorageEvidenceVerifier
+from cognityx_experiments.publication import PublicationPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,7 @@ class PreflightResult:
     passed: bool
     checks: tuple[PreflightCheck, ...]
     budget: Mapping[str, Any]
+    publication: Mapping[str, Any]
     schema: str = "cognityx.experiment.preflight/v1"
 
     def to_dict(self) -> dict[str, Any]:
@@ -58,11 +60,12 @@ class PreflightResult:
             "passed": self.passed,
             "checks": [check.to_dict() for check in self.checks],
             "budget": dict(self.budget),
+            "publication": dict(self.publication),
         }
 
 
 class ProductionPreflight:
-    """Inspect frozen inputs, runtime prerequisites, and the private journal."""
+    """Inspect frozen inputs, runtime prerequisites, and the research journal."""
 
     def __init__(
         self,
@@ -99,12 +102,15 @@ class ProductionPreflight:
         plan: ExecutionPlan,
     ) -> PreflightResult:
         checks: list[PreflightCheck] = []
+        policy, policy_check = _resolve_publication_policy(spec)
+        checks.append(policy_check)
         checks.extend(self._research(spec, logical, plan))
         checks.extend(self._software(plan))
         checks.extend(self._storage_and_data(spec))
         checks.extend(self._inference_and_gpu(spec))
         checks.extend(self._observability(spec))
-        checks.extend(self._git_journal())
+        git_checks, publication = self._git_journal(policy)
+        checks.extend(git_checks)
         budget = self._budget(spec, plan)
         checks.extend(self._budget_checks(spec, budget))
         return PreflightResult(
@@ -113,6 +119,7 @@ class ProductionPreflight:
             passed=all(check.status == "passed" for check in checks),
             checks=tuple(checks),
             budget=budget,
+            publication=publication,
         )
 
     def _research(
@@ -403,21 +410,47 @@ class ProductionPreflight:
         except Exception as exc:
             return [_failed("observability", "backend", exc)]
 
-    def _git_journal(self) -> list[PreflightCheck]:
+    def _git_journal(
+        self,
+        policy: PublicationPolicy | None,
+    ) -> tuple[list[PreflightCheck], dict[str, Any]]:
+        publication = _publication_evidence(policy)
         try:
+            if policy is None:
+                raise ValueError("Frozen publication policy did not resolve")
             repository = self.results_repository
             if not (repository / ".git").exists():
                 raise ValueError("Results path is not a Git repository")
             origin = _git(repository, "remote", "get-url", "origin")
             normalized = _normalize_repository(origin)
-            if normalized != "cognityx/cognityx-experiment-results":
+            publication["observed_repository"] = normalized
+            expected = _normalize_repository(policy.repository)
+            if normalized != expected:
                 raise ValueError(f"Unexpected results repository: {normalized}")
             if _git(repository, "status", "--porcelain"):
                 raise ValueError("Results repository worktree is not clean")
             visibility = self.repository_visibility(repository).upper()
-            if visibility != "PRIVATE":
+            publication["observed_repository_visibility"] = visibility
+            if visibility not in {"PRIVATE", "PUBLIC"}:
                 raise ValueError(
-                    "Results repository visibility must be PRIVATE for real publication"
+                    f"Unsupported results repository visibility: {visibility}"
+                )
+            if (
+                policy.repository_visibility_policy == "private_required"
+                and visibility != "PRIVATE"
+            ):
+                raise ValueError(
+                    "Frozen private_required policy requires a PRIVATE results "
+                    "repository"
+                )
+            if (
+                policy.repository_visibility_policy == "public_summary"
+                and visibility == "PUBLIC"
+                and policy.data_classification != "public"
+            ):
+                raise ValueError(
+                    "A PUBLIC results repository requires public_summary with "
+                    "data_classification=public"
                 )
             if self.push_enabled:
                 subprocess.run(
@@ -426,16 +459,29 @@ class ProductionPreflight:
                     text=True,
                     capture_output=True,
                 )
-            return [
-                _passed(
-                    "git_journal",
-                    "private_clean_repository",
-                    "Expected private results repository is clean and authenticated.",
-                    {"repository": normalized, "visibility": visibility},
-                )
-            ]
+            return (
+                [
+                    _passed(
+                        "git_journal",
+                        "policy_clean_repository",
+                        "Results repository matches the frozen publication policy.",
+                        publication,
+                    )
+                ],
+                publication,
+            )
         except Exception as exc:
-            return [_failed("git_journal", "private_clean_repository", exc)]
+            return (
+                [
+                    _failed(
+                        "git_journal",
+                        "policy_clean_repository",
+                        exc,
+                        evidence=publication,
+                    )
+                ],
+                publication,
+            )
 
     @staticmethod
     def _budget(spec: ResearchSpec, plan: ExecutionPlan) -> dict[str, Any]:
@@ -549,6 +595,56 @@ def synthetic_software_identities() -> tuple[SoftwareIdentity, ...]:
     )
 
 
+def resolve_publication_policy(spec: ResearchSpec) -> PublicationPolicy:
+    """Resolve one frozen publication policy for one Git transaction."""
+    policies = tuple(
+        PublicationPolicy.from_experiment(experiment) for experiment in spec.experiments
+    )
+    if not policies:
+        raise ValueError("ResearchSpec has no experiment publication policy")
+    selected = policies[0]
+    if any(policy != selected for policy in policies[1:]):
+        raise ValueError(
+            "All experiments in one execution must use the same publication policy"
+        )
+    return selected
+
+
+def _resolve_publication_policy(
+    spec: ResearchSpec,
+) -> tuple[PublicationPolicy | None, PreflightCheck]:
+    try:
+        policy = resolve_publication_policy(spec)
+        return policy, _passed(
+            "publication",
+            "frozen_policy",
+            "One frozen publication policy governs the Git transaction.",
+            _publication_evidence(policy),
+        )
+    except Exception as exc:
+        return None, _failed("publication", "frozen_policy", exc)
+
+
+def _publication_evidence(
+    policy: PublicationPolicy | None,
+) -> dict[str, Any]:
+    return {
+        "declared_repository": policy.repository if policy else None,
+        "declared_repository_visibility_policy": (
+            policy.repository_visibility_policy if policy else None
+        ),
+        "declared_data_classification": (
+            policy.data_classification if policy else None
+        ),
+        "declared_content_policy": policy.content_policy if policy else None,
+        "effective_content_projection": (
+            policy.effective_content_projection if policy else None
+        ),
+        "observed_repository": None,
+        "observed_repository_visibility": None,
+    }
+
+
 def _passed(
     category: str,
     check: str,
@@ -558,13 +654,19 @@ def _passed(
     return PreflightCheck(category, check, "passed", detail, dict(evidence))
 
 
-def _failed(category: str, check: str, error: Exception) -> PreflightCheck:
+def _failed(
+    category: str,
+    check: str,
+    error: Exception,
+    *,
+    evidence: Mapping[str, Any] | None = None,
+) -> PreflightCheck:
     return PreflightCheck(
         category,
         check,
         "failed",
         str(error),
-        {"error_type": type(error).__name__},
+        {**dict(evidence or {}), "error_type": type(error).__name__},
     )
 
 

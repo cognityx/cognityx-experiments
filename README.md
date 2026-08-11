@@ -53,10 +53,12 @@ uv run cognityx-experiments run research.yaml \
   --push-results
 ```
 
-The results repository must be private and clean before a real run can begin.
-This is a fail-closed safety rule: if the repository is public, the preflight
-reports the problem and changes nothing. The example protocol is intentionally
-structural; add frozen Storage addresses for all evaluation sets and an
-Inference service address before using it for production.
+The results repository must be clean and match the repository frozen in the
+research YAML. The default policy requires private visibility. The example
+instead demonstrates the explicit `public_summary` policy for the next
+public-safe shakedown: only data classified `public` may reach a public
+repository, and only the strict aggregate summary is written. The example is
+intentionally structural; add frozen Storage addresses for all evaluation sets
+and an Inference service address before using it for production.
 
 See the [documentation](docs/index.md) for contracts and ownership boundaries.

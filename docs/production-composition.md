@@ -17,7 +17,7 @@ ResearchSpec and frozen software identities
                          +-> base/adapter pairs -> Evaluator
                                                    |
                                                    v
-                  Storage evidence -> analysis -> private Git journal
+             Storage evidence -> analysis -> policy-gated Git journal
 ```
 
 ## Public component seams
@@ -59,14 +59,25 @@ training (`training_eligible: false`).
 ## Safe publication boundary
 
 The Git repository is a readable research journal, while Storage remains the
-durable evidence store. A real run requires the repository identity
-`cognityx/cognityx-experiment-results`, a clean worktree, and private visibility.
-If any condition is false, preflight stops before preregistration, training, or
-publication. It never changes repository visibility.
+durable evidence store. A real run requires a clean worktree whose Git identity
+matches the repository frozen in the research YAML. It never changes repository
+visibility.
 
-Publication writes only a whitelist of sanitized research files. Secret-like
-fields, raw answer text, environment values, and local paths are removed or
-replaced. A Storage receipt records the exact Git commit and snapshot path.
+The default policy (`private_required`) accepts only a private repository and
+keeps the existing `full`, `sanitized`, and `metadata_only` content choices. A
+deliberate `public_summary` policy may use a public repository only when the
+same frozen configuration classifies the data as `public`. Internal,
+confidential, restricted, and unspecified data fail closed against public Git.
+A private repository may also use `public_summary`, but it still receives only
+the stricter summary.
+
+The public summary is constructed from approved research identities,
+revisions, checksums, aggregate statistics, findings, tables, and figure data.
+It omits individual records, prompts, answers, source content, private Storage
+addresses, credentials, environment values, and local paths. A Storage receipt
+records the exact Git commit and snapshot path. If repository identity,
+visibility, classification, or content checks fail, preflight stops before
+preregistration, training, or publication.
 
 ## Interruption and retry
 

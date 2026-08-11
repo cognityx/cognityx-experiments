@@ -30,6 +30,7 @@ from cognityx_experiments.pipeline import ResearchMaterialPipeline
 from cognityx_experiments.preflight import (
     ProductionPreflight,
     resolve_installed_software_identities,
+    resolve_publication_policy,
     synthetic_software_identities,
 )
 from cognityx_experiments.production import CognityxComponentGateway
@@ -164,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
         publisher = GitResearchPublisher(
             args.results_repo,
             push=args.push_results,
+            expected_repository=resolve_publication_policy(spec).repository,
         )
         gateway = CognityxComponentGateway(runtime)
         material_hook = ResearchMaterialPipeline(

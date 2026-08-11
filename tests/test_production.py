@@ -448,28 +448,65 @@ def _composition(
     )
 
 
-def test_public_results_repository_fails_closed(
-    tmp_path: Path, research_spec: ResearchSpec
+@pytest.mark.parametrize(
+    (
+        "visibility",
+        "visibility_policy",
+        "classification",
+        "expected_passed",
+    ),
+    [
+        ("PRIVATE", "private_required", "unspecified", True),
+        ("PUBLIC", "private_required", "public", False),
+        ("PUBLIC", "public_summary", "public", True),
+        ("PUBLIC", "public_summary", "internal", False),
+        ("PUBLIC", "public_summary", "confidential", False),
+        ("PUBLIC", "public_summary", "restricted", False),
+        ("PUBLIC", "public_summary", "unspecified", False),
+        ("PRIVATE", "public_summary", "internal", True),
+    ],
+)
+def test_results_repository_visibility_obeys_frozen_publication_policy(
+    tmp_path: Path,
+    research_spec: ResearchSpec,
+    visibility: str,
+    visibility_policy: str,
+    classification: str,
+    expected_passed: bool,
 ) -> None:
     runtime = _runtime(tmp_path / "storage")
-    spec = _frozen_spec(runtime, research_spec, tmp_path)
+    frozen = _frozen_spec(runtime, research_spec, tmp_path).to_dict()
+    publication = frozen["experiments"][0]["execution"]["publication"]
+    publication["repository_visibility_policy"] = visibility_policy
+    publication["data_classification"] = classification
+    spec = ResearchSpec.from_mapping(frozen)
     logical = compile_logical_plan(spec)
     identities = _identities()
     plan = compile_execution_plan(logical, software_identities=identities)
     result = ProductionPreflight(
         runtime,
         results_repository=_results_repository(tmp_path / "results"),
-        repository_visibility=lambda repository: "PUBLIC",
+        repository_visibility=lambda repository: visibility,
         inference_probe=lambda base_url: {"base_url": base_url, "ready": True},
         actual_software=identities,
     ).run(spec, logical, plan)
 
-    assert result.passed is False
+    assert result.passed is expected_passed
+    assert result.publication == {
+        "declared_repository": "cognityx/cognityx-experiment-results",
+        "declared_repository_visibility_policy": visibility_policy,
+        "declared_data_classification": classification,
+        "declared_content_policy": "sanitized",
+        "effective_content_projection": (
+            "public_summary" if visibility_policy == "public_summary" else "sanitized"
+        ),
+        "observed_repository": "cognityx/cognityx-experiment-results",
+        "observed_repository_visibility": visibility,
+    }
     git_check = next(
         check for check in result.checks if check.category == "git_journal"
     )
-    assert git_check.status == "failed"
-    assert "PRIVATE" in git_check.detail
+    assert git_check.status == ("passed" if expected_passed else "failed")
 
 
 def test_production_gateway_completes_real_storage_and_git_contracts(
