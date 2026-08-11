@@ -16,6 +16,8 @@ from cognityx_experiments.canonical import canonical_bytes, checksum, plain
 from cognityx_experiments.contracts import ExecutionStep
 from cognityx_experiments.executor import ComponentResult
 
+TRAINING_CLI_RESULT_SCHEMA = "cognityx.training.cli-result/v1"
+
 
 class ComponentCommandRunner(Protocol):
     """Run one public machine-readable component command."""
@@ -110,6 +112,28 @@ class EvaluatorOperation(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
+class ComponentMachineOutputError(ValueError):
+    """Report a strict machine-output violation without persisting raw content."""
+
+    def __init__(
+        self,
+        arguments: Sequence[str],
+        completed: subprocess.CompletedProcess[str],
+        reason: str,
+    ) -> None:
+        executable = str(arguments[0]).replace("\\", "/").rsplit("/", 1)[-1]
+        self.executable = executable
+        self.exit_status = completed.returncode
+        self.stdout_byte_count = len(completed.stdout.encode("utf-8"))
+        self.stderr_byte_count = len(completed.stderr.encode("utf-8"))
+        super().__init__(
+            f"Machine output contract failed for {executable}: {reason}; "
+            f"exit_status={self.exit_status}; "
+            f"stdout_bytes={self.stdout_byte_count}; "
+            f"stderr_bytes={self.stderr_byte_count}"
+        )
+
+
 class JsonCommandRunner:
     """Subprocess adapter for Cognityx CLIs that print one JSON document."""
 
@@ -118,15 +142,78 @@ class JsonCommandRunner:
     ) -> Mapping[str, Any]:
         completed = subprocess.run(
             list(arguments),
-            check=True,
+            check=False,
             text=True,
             capture_output=True,
             timeout=timeout_seconds,
         )
-        value = json.loads(completed.stdout)
+        if completed.returncode != 0:
+            raise ComponentMachineOutputError(
+                arguments,
+                completed,
+                "component command returned a nonzero exit status",
+            )
+        try:
+            value = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise ComponentMachineOutputError(
+                arguments,
+                completed,
+                "stdout is not exactly one JSON document",
+            ) from exc
         if not isinstance(value, Mapping):
-            raise ValueError("Component command did not return a JSON object")
+            raise ComponentMachineOutputError(
+                arguments,
+                completed,
+                "stdout JSON is not an object",
+            )
         return plain(value)
+
+
+def validate_training_cli_result(
+    value: Mapping[str, Any], *, expected_mode: str
+) -> Mapping[str, Any]:
+    """Validate only the Training machine handoff envelope."""
+    if value.get("schema") != TRAINING_CLI_RESULT_SCHEMA:
+        raise ValueError("Training CLI result has an unsupported schema")
+    if value.get("mode") != expected_mode:
+        raise ValueError(f"Training CLI result mode must be {expected_mode!r}")
+    common = ("experiment_id", "training_run_id")
+    required = (
+        common
+        + (
+            "total_records",
+            "accepted_training_examples",
+            "evaluation_records",
+            "micro_batch_size",
+            "effective_batch_size",
+            "optimizer_steps",
+        )
+        if expected_mode == "dry_run"
+        else common
+        + (
+            "training_variant_id",
+            "adapter_id",
+            "adapter_manifest_uri",
+            "training_report_uri",
+            "publication_manifest_uri",
+            "artifact_uri",
+        )
+    )
+    for name in required:
+        selected = value.get(name)
+        if expected_mode == "dry_run" and name not in common:
+            if isinstance(selected, bool) or not isinstance(selected, int):
+                raise ValueError(
+                    f"Training CLI result field {name!r} must be an integer"
+                )
+            if selected < 0:
+                raise ValueError(
+                    f"Training CLI result field {name!r} must not be negative"
+                )
+        elif not isinstance(selected, str) or not selected:
+            raise ValueError(f"Training CLI result is missing required field {name!r}")
+    return plain(value)
 
 
 class SubprocessRunner:
@@ -357,10 +444,11 @@ class CliTrainingOperation:
             run_id=run_id,
             parent_run_id=parent_run_id,
         )
-        return self.runner.run(
+        result = self.runner.run(
             arguments,
             timeout_seconds=float(config.get("timeout_seconds", 21600)),
         )
+        return validate_training_cli_result(result, expected_mode="completed")
 
 
 class HttpInferenceOperation:
@@ -841,6 +929,8 @@ def build_training_command(
         f"exp-{checksum(step.experiment_id)[:24]}",
         "--seed",
         str(step.seed),
+        "--output-format",
+        "json",
         *_storage_arguments(config),
     ]
     if parent_run_id:

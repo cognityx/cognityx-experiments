@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
@@ -22,9 +21,12 @@ from cognityx_experiments.contracts import (
     SoftwareIdentity,
 )
 from cognityx_experiments.production import (
+    ComponentMachineOutputError,
+    JsonCommandRunner,
     JsonHttpTransport,
     StorageEvidenceVerifier,
     build_training_command,
+    validate_training_cli_result,
 )
 from cognityx_experiments.publication import PublicationPolicy
 
@@ -82,7 +84,7 @@ class ProductionPreflight:
         gpu_inventory: Callable[[], Mapping[str, Any]] | None = None,
         tracking_probe: Callable[[Mapping[str, Any]], bool] | None = None,
         training_contract_runner: (
-            Callable[[Sequence[str], float | None], str] | None
+            Callable[[Sequence[str], float | None], Mapping[str, Any]] | None
         ) = None,
         actual_software: Sequence[SoftwareIdentity] | None = None,
         push_enabled: bool = False,
@@ -363,11 +365,23 @@ class ProductionPreflight:
                     dry_run=True,
                 )
                 evidence["training_executable"] = Path(arguments[0]).name
-                output = self.training_contract_runner(
-                    arguments,
-                    float(config.get("timeout_seconds", 21600)),
+                output = validate_training_cli_result(
+                    self.training_contract_runner(
+                        arguments,
+                        float(config.get("timeout_seconds", 21600)),
+                    ),
+                    expected_mode="dry_run",
                 )
-                evidence.update(_training_dry_run_counts(output))
+                evidence.update(
+                    {
+                        name: int(output[name])
+                        for name in (
+                            "total_records",
+                            "accepted_training_examples",
+                            "evaluation_records",
+                        )
+                    }
+                )
                 evidence["success"] = True
                 checks.append(
                     _passed(
@@ -378,15 +392,19 @@ class ProductionPreflight:
                         evidence,
                     )
                 )
-            except subprocess.CalledProcessError as exc:
-                evidence["exit_code"] = exc.returncode
+            except (subprocess.CalledProcessError, ComponentMachineOutputError) as exc:
+                evidence["exit_code"] = (
+                    exc.returncode
+                    if isinstance(exc, subprocess.CalledProcessError)
+                    else exc.exit_status
+                )
                 checks.append(
                     _failed(
                         "component_contract",
                         "training_dry_run",
                         RuntimeError(
                             f"Training dry-run failed for {step.step_id} "
-                            f"with exit status {exc.returncode}"
+                            f"with exit status {evidence['exit_code']}"
                         ),
                         evidence=evidence,
                     )
@@ -737,30 +755,8 @@ def _publication_evidence(
 
 def _run_training_contract(
     arguments: Sequence[str], timeout_seconds: float | None
-) -> str:
-    completed = subprocess.run(
-        list(arguments),
-        check=True,
-        text=True,
-        capture_output=True,
-        timeout=timeout_seconds,
-    )
-    return completed.stdout
-
-
-def _training_dry_run_counts(output: str) -> dict[str, int]:
-    match = re.search(
-        r"Dataset records: (\d+) total, (\d+) training, (\d+) evaluation\.",
-        output,
-    )
-    if match is None:
-        return {}
-    total, training, evaluation = (int(value) for value in match.groups())
-    return {
-        "total_records": total,
-        "accepted_training_examples": training,
-        "evaluation_records": evaluation,
-    }
+) -> Mapping[str, Any]:
+    return JsonCommandRunner().run(arguments, timeout_seconds=timeout_seconds)
 
 
 def _passed(

@@ -25,12 +25,16 @@ from cognityx_experiments.ledger import ExperimentLedger
 from cognityx_experiments.pipeline import ResearchMaterialPipeline
 from cognityx_experiments.preflight import ProductionPreflight
 from cognityx_experiments.production import (
+    TRAINING_CLI_RESULT_SCHEMA,
     CliDataForgeOperation,
     CliEvaluatorOperation,
     CliTrainingOperation,
     CognityxComponentGateway,
+    ComponentMachineOutputError,
     HttpInferenceOperation,
+    JsonCommandRunner,
     build_training_command,
+    validate_training_cli_result,
 )
 from cognityx_experiments.publication import GitResearchPublisher
 from cognityx_experiments.synthesis import FindingSynthesizer
@@ -392,7 +396,18 @@ class _TrainingContractRunner:
         experiment_id = selected[selected.index("--experiment-id") + 1]
         if self.fail or experiment_id == "invalid":
             raise subprocess.CalledProcessError(2, selected)
-        return "Dataset records: 3 total, 1 training, 2 evaluation."
+        return {
+            "schema": TRAINING_CLI_RESULT_SCHEMA,
+            "mode": "dry_run",
+            "experiment_id": experiment_id,
+            "training_run_id": selected[selected.index("--run-id") + 1],
+            "total_records": 3,
+            "accepted_training_examples": 1,
+            "evaluation_records": 2,
+            "micro_batch_size": 1,
+            "effective_batch_size": 1,
+            "optimizer_steps": 1,
+        }
 
 
 def _composition(
@@ -794,7 +809,20 @@ def test_public_cli_adapters_emit_machine_readable_component_contracts(
         declared_uri,
     )
 
-    training_runner = _CommandRunner({"publication_manifest_uri": "storage://pub"})
+    training_runner = _CommandRunner(
+        {
+            "schema": TRAINING_CLI_RESULT_SCHEMA,
+            "mode": "completed",
+            "experiment_id": "exp-contract",
+            "training_variant_id": "tvar-contract",
+            "training_run_id": "trun-stable",
+            "adapter_id": "adp-contract",
+            "adapter_manifest_uri": "storage://adapter",
+            "training_report_uri": "storage://report",
+            "publication_manifest_uri": "storage://pub",
+            "artifact_uri": "storage://artifact",
+        }
+    )
     CliTrainingOperation(training_runner).train(
         train,
         {"manifest_uri": declared_uri},
@@ -815,6 +843,10 @@ def test_public_cli_adapters_emit_machine_readable_component_contracts(
         + 2
     ]
     assert "--seed" in training_arguments
+    assert training_arguments[training_arguments.index("--output-format") :][:2] == (
+        "--output-format",
+        "json",
+    )
     assert training_arguments[-2:] == ("--parent-run-id", "observation-parent")
 
     evaluator_runner = _CommandRunner({"manifest_uri": "storage://eval"})
@@ -880,6 +912,84 @@ def test_preflight_uses_exact_training_dry_run_contract(
     assert len(checks) == len(train_steps)
     assert all(check.status == "passed" for check in checks)
     assert all(check.evidence["accepted_training_examples"] == 1 for check in checks)
+
+
+def test_json_command_runner_rejects_mixed_stdout_without_echoing_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "private-training-status"
+    completed = subprocess.CompletedProcess(
+        ["/opt/bin/cognityx-training"],
+        0,
+        stdout=f'{secret}\n{{"schema": "example"}}\n',
+        stderr="warning text",
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+
+    with pytest.raises(ComponentMachineOutputError) as caught:
+        JsonCommandRunner().run(["/opt/bin/cognityx-training"])
+
+    message = str(caught.value)
+    assert secret not in message
+    assert "warning text" not in message
+    assert "cognityx-training" in message
+    assert "stdout_bytes=" in message
+    assert "stderr_bytes=" in message
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    ["[]", '"string"', "null"],
+)
+def test_json_command_runner_requires_one_json_object(
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str,
+) -> None:
+    completed = subprocess.CompletedProcess(["component"], 0, stdout, "")
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+
+    with pytest.raises(ComponentMachineOutputError, match="not an object"):
+        JsonCommandRunner().run(["component"])
+
+
+def test_json_command_runner_redacts_nonzero_component_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    completed = subprocess.CompletedProcess(
+        ["component"], 2, "unsafe stdout", "unsafe stderr"
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
+
+    with pytest.raises(ComponentMachineOutputError) as caught:
+        JsonCommandRunner().run(["component"])
+
+    assert "unsafe" not in str(caught.value)
+    assert caught.value.exit_status == 2
+
+
+def test_training_machine_envelope_validation_fails_closed() -> None:
+    with pytest.raises(ValueError, match="unsupported schema"):
+        validate_training_cli_result(
+            {"schema": "unexpected", "mode": "dry_run"},
+            expected_mode="dry_run",
+        )
+    with pytest.raises(ValueError, match="mode"):
+        validate_training_cli_result(
+            {"schema": TRAINING_CLI_RESULT_SCHEMA, "mode": "completed"},
+            expected_mode="dry_run",
+        )
+    with pytest.raises(ValueError, match="adapter_manifest_uri"):
+        validate_training_cli_result(
+            {
+                "schema": TRAINING_CLI_RESULT_SCHEMA,
+                "mode": "completed",
+                "experiment_id": "exp-example",
+                "training_run_id": "trun-example",
+                "training_variant_id": "tvar-example",
+                "adapter_id": "adp-example",
+            },
+            expected_mode="completed",
+        )
 
 
 def test_preflight_fails_when_training_rejects_final_experiment_override(
