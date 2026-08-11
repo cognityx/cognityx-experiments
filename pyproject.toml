@@ -11,7 +11,7 @@ requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Cognityx" }]
 dependencies = [
-    "cognityx-observability @ git+https://github.com/cognityx/cognityx-observability.git@d872acd6b5945c4fd93fc33125edb230a5854b50",
+    "cognityx-observability @ git+https://github.com/cognityx/cognityx-observability.git@b02ec3c103d0b3fd22b7c33888155b763d6baa9f",
     "cognityx-resource @ git+https://github.com/cognityx/cognityx-resource.git@b23220b69fcb182e681cf13276c37474666c9bd2",
     "cognityx-storage @ git+https://github.com/cognityx/cognityx-storage.git@4b47b898b2fb465263d8c44350d4241f52b13c90",
     "pyyaml>=6.0",
