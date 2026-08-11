@@ -44,6 +44,18 @@ Storage package, tokenizer selection, sequence length and accepted examples
 before preregistration or scientific execution begins. Model weights and the
 optimizer are not allocated by this check.
 
+Every component command has one simple machine boundary: a successful command
+writes exactly one JSON object to standard output. Progress and warnings belong
+on standard error. Experiments does not search for a JSON fragment inside human
+text; malformed or non-object output fails with a safe contract error that
+records only the executable name, exit status, and output byte counts.
+
+The shared Training command always requests `--output-format json`. Its dry-run
+response supplies the safe record and batch counts directly, so preflight does
+not parse human sentences. A completed response is only a handoff: Experiments
+still reads and verifies the immutable Training publication and adapter
+manifests from Storage before it records the step as complete.
+
 These are explicit adapters rather than a generic plugin framework because the
 set of scientific operations is small and each owner has a different contract.
 The separation prevents Experiments from interpreting private model or storage
