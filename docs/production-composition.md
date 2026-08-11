@@ -38,6 +38,12 @@ The production gateway uses the existing public boundaries:
   A component's standard output is only a compact handoff, never the evidence
   itself.
 
+Production and preflight use one Training command builder. Preflight appends
+only `--dry-run`, so Training itself validates the effective configuration,
+Storage package, tokenizer selection, sequence length and accepted examples
+before preregistration or scientific execution begins. Model weights and the
+optimizer are not allocated by this check.
+
 These are explicit adapters rather than a generic plugin framework because the
 set of scientific operations is small and each owner has a different contract.
 The separation prevents Experiments from interpreting private model or storage

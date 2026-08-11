@@ -30,6 +30,7 @@ from cognityx_experiments.production import (
     CliTrainingOperation,
     CognityxComponentGateway,
     HttpInferenceOperation,
+    build_training_command,
 )
 from cognityx_experiments.publication import GitResearchPublisher
 from cognityx_experiments.synthesis import FindingSynthesizer
@@ -379,6 +380,21 @@ class _FailSecondPush:
         return subprocess.run(command, **parameters)
 
 
+class _TrainingContractRunner:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[tuple[str, ...]] = []
+
+    def __call__(self, arguments, timeout_seconds):
+        del timeout_seconds
+        selected = tuple(arguments)
+        self.calls.append(selected)
+        experiment_id = selected[selected.index("--experiment-id") + 1]
+        if self.fail or experiment_id == "invalid":
+            raise subprocess.CalledProcessError(2, selected)
+        return "Dataset records: 3 total, 1 training, 2 evaluation."
+
+
 def _composition(
     tmp_path: Path,
     source: ResearchSpec,
@@ -401,6 +417,7 @@ def _composition(
         results_repository=results,
         repository_visibility=lambda repository: "PRIVATE",
         inference_probe=lambda base_url: {"base_url": base_url, "ready": True},
+        training_contract_runner=_TrainingContractRunner(),
         actual_software=identities,
     ).run(spec, logical, plan)
     dataforge = _DataForge(runtime)
@@ -488,6 +505,7 @@ def test_results_repository_visibility_obeys_frozen_publication_policy(
         results_repository=_results_repository(tmp_path / "results"),
         repository_visibility=lambda repository: visibility,
         inference_probe=lambda base_url: {"base_url": base_url, "ready": True},
+        training_contract_runner=_TrainingContractRunner(),
         actual_software=identities,
     ).run(spec, logical, plan)
 
@@ -784,6 +802,12 @@ def test_public_cli_adapters_emit_machine_readable_component_contracts(
         parent_run_id="observation-parent",
     )
     training_arguments = training_runner.calls[0]
+    assert training_arguments == build_training_command(
+        train,
+        manifest_uri=declared_uri,
+        run_id="trun-stable",
+        parent_run_id="observation-parent",
+    )
     assert ("--dataset-uri", declared_uri) == training_arguments[
         training_arguments.index("--dataset-uri") : training_arguments.index(
             "--dataset-uri"
@@ -809,6 +833,95 @@ def test_public_cli_adapters_emit_machine_readable_component_contracts(
         "--parent-run-id",
         "observation-parent",
     )
+
+
+def test_preflight_uses_exact_training_dry_run_contract(
+    tmp_path: Path, research_spec: ResearchSpec
+) -> None:
+    runtime = _runtime(tmp_path / "storage")
+    spec = _frozen_spec(runtime, research_spec, tmp_path)
+    training_config = Path(spec.experiments[0].execution["training"]["config"])
+    training_config.write_text(
+        '[experiment]\nid = "EXP-SYS-E2E-001"\n', encoding="utf-8"
+    )
+    logical = compile_logical_plan(spec)
+    identities = _identities()
+    plan = compile_execution_plan(logical, software_identities=identities)
+    runner = _TrainingContractRunner()
+
+    result = ProductionPreflight(
+        runtime,
+        results_repository=_results_repository(tmp_path / "results"),
+        repository_visibility=lambda repository: "PRIVATE",
+        inference_probe=lambda base_url: {"base_url": base_url, "ready": True},
+        training_contract_runner=runner,
+        actual_software=identities,
+    ).run(spec, logical, plan)
+
+    assert result.passed is True
+    train_steps = tuple(step for step in plan.steps if step.operation == "train")
+    assert len(runner.calls) == len(train_steps)
+    for step, arguments in zip(train_steps, runner.calls, strict=True):
+        manifest_uri = step.input_references["treatment"]["inputs"][
+            "research_package_uri"
+        ]
+        assert arguments == build_training_command(
+            step,
+            manifest_uri=manifest_uri,
+            run_id=f"trun-{step.idempotency_key[:24]}",
+            parent_run_id=None,
+            dry_run=True,
+        )
+    checks = [
+        check
+        for check in result.checks
+        if check.category == "component_contract" and check.check == "training_dry_run"
+    ]
+    assert len(checks) == len(train_steps)
+    assert all(check.status == "passed" for check in checks)
+    assert all(check.evidence["accepted_training_examples"] == 1 for check in checks)
+
+
+def test_preflight_fails_when_training_rejects_final_experiment_override(
+    tmp_path: Path,
+    research_spec: ResearchSpec,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime(tmp_path / "storage")
+    spec = _frozen_spec(runtime, research_spec, tmp_path)
+    logical = compile_logical_plan(spec)
+    identities = _identities()
+    plan = compile_execution_plan(logical, software_identities=identities)
+
+    def invalid_training_command(*args, **kwargs):
+        arguments = list(build_training_command(*args, **kwargs))
+        arguments[arguments.index("--experiment-id") + 1] = "invalid"
+        return tuple(arguments)
+
+    monkeypatch.setattr(
+        "cognityx_experiments.preflight.build_training_command",
+        invalid_training_command,
+    )
+    runner = _TrainingContractRunner()
+
+    result = ProductionPreflight(
+        runtime,
+        results_repository=_results_repository(tmp_path / "results"),
+        repository_visibility=lambda repository: "PRIVATE",
+        inference_probe=lambda base_url: {"base_url": base_url, "ready": True},
+        training_contract_runner=runner,
+        actual_software=identities,
+    ).run(spec, logical, plan)
+
+    assert result.passed is False
+    failed = [
+        check
+        for check in result.checks
+        if check.category == "component_contract" and check.check == "training_dry_run"
+    ]
+    assert len(failed) == sum(step.operation == "train" for step in plan.steps)
+    assert all(check.status == "failed" for check in failed)
+    assert all(check.evidence["exit_code"] == 2 for check in failed)
 
 
 def test_inference_http_adapter_uses_supported_context_and_owns_only_local_process(

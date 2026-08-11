@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
@@ -20,7 +21,11 @@ from cognityx_experiments.contracts import (
     ResearchSpec,
     SoftwareIdentity,
 )
-from cognityx_experiments.production import JsonHttpTransport, StorageEvidenceVerifier
+from cognityx_experiments.production import (
+    JsonHttpTransport,
+    StorageEvidenceVerifier,
+    build_training_command,
+)
 from cognityx_experiments.publication import PublicationPolicy
 
 
@@ -76,6 +81,9 @@ class ProductionPreflight:
         inference_probe: Callable[[str], Mapping[str, Any]] | None = None,
         gpu_inventory: Callable[[], Mapping[str, Any]] | None = None,
         tracking_probe: Callable[[Mapping[str, Any]], bool] | None = None,
+        training_contract_runner: (
+            Callable[[Sequence[str], float | None], str] | None
+        ) = None,
         actual_software: Sequence[SoftwareIdentity] | None = None,
         push_enabled: bool = False,
     ) -> None:
@@ -88,6 +96,9 @@ class ProductionPreflight:
         self.inference_probe = inference_probe or _inference_probe
         self.gpu_inventory = gpu_inventory or _gpu_inventory
         self.tracking_probe = tracking_probe or (lambda config: True)
+        self.training_contract_runner = (
+            training_contract_runner or _run_training_contract
+        )
         self.actual_software = tuple(
             actual_software
             if actual_software is not None
@@ -107,6 +118,7 @@ class ProductionPreflight:
         checks.extend(self._research(spec, logical, plan))
         checks.extend(self._software(plan))
         checks.extend(self._storage_and_data(spec))
+        checks.extend(self._training_contracts(plan))
         checks.extend(self._inference_and_gpu(spec))
         checks.extend(self._observability(spec))
         git_checks, publication = self._git_journal(policy)
@@ -310,6 +322,84 @@ class ProductionPreflight:
             )
         except Exception as exc:
             checks.append(_failed("data", "frozen_inputs", exc))
+        return checks
+
+    def _training_contracts(self, plan: ExecutionPlan) -> list[PreflightCheck]:
+        checks: list[PreflightCheck] = []
+        training_revision = next(
+            (
+                identity.git_revision
+                for identity in plan.software_identities
+                if identity.component == "cognityx-training"
+            ),
+            "unknown",
+        )
+        for step in (item for item in plan.steps if item.operation == "train"):
+            treatment = dict(step.input_references.get("treatment") or {})
+            inputs = dict(treatment.get("inputs") or {})
+            manifest_uri = (
+                inputs.get("research_package_uri")
+                or inputs.get("data_package_uri")
+                or inputs.get("dataset_manifest_uri")
+            )
+            evidence: dict[str, Any] = {
+                "step_id": step.step_id,
+                "treatment_id": step.treatment_id,
+                "seed": step.seed,
+                "training_revision": training_revision,
+                "success": False,
+            }
+            try:
+                if not manifest_uri:
+                    raise ValueError(
+                        "Training dry-run requires a frozen package or dataset URI"
+                    )
+                config = dict(step.input_references.get("training") or {})
+                arguments = build_training_command(
+                    step,
+                    manifest_uri=str(manifest_uri),
+                    run_id=f"trun-{step.idempotency_key[:24]}",
+                    parent_run_id=None,
+                    dry_run=True,
+                )
+                evidence["training_executable"] = Path(arguments[0]).name
+                output = self.training_contract_runner(
+                    arguments,
+                    float(config.get("timeout_seconds", 21600)),
+                )
+                evidence.update(_training_dry_run_counts(output))
+                evidence["success"] = True
+                checks.append(
+                    _passed(
+                        "component_contract",
+                        "training_dry_run",
+                        "Training accepted the exact effective command without "
+                        "loading a model.",
+                        evidence,
+                    )
+                )
+            except subprocess.CalledProcessError as exc:
+                evidence["exit_code"] = exc.returncode
+                checks.append(
+                    _failed(
+                        "component_contract",
+                        "training_dry_run",
+                        RuntimeError(
+                            f"Training dry-run failed for {step.step_id} "
+                            f"with exit status {exc.returncode}"
+                        ),
+                        evidence=evidence,
+                    )
+                )
+            except Exception as exc:
+                checks.append(
+                    _failed(
+                        "component_contract",
+                        "training_dry_run",
+                        exc,
+                        evidence=evidence,
+                    )
+                )
         return checks
 
     def _inference_and_gpu(self, spec: ResearchSpec) -> list[PreflightCheck]:
@@ -642,6 +732,34 @@ def _publication_evidence(
         ),
         "observed_repository": None,
         "observed_repository_visibility": None,
+    }
+
+
+def _run_training_contract(
+    arguments: Sequence[str], timeout_seconds: float | None
+) -> str:
+    completed = subprocess.run(
+        list(arguments),
+        check=True,
+        text=True,
+        capture_output=True,
+        timeout=timeout_seconds,
+    )
+    return completed.stdout
+
+
+def _training_dry_run_counts(output: str) -> dict[str, int]:
+    match = re.search(
+        r"Dataset records: (\d+) total, (\d+) training, (\d+) evaluation\.",
+        output,
+    )
+    if match is None:
+        return {}
+    total, training, evaluation = (int(value) for value in match.groups())
+    return {
+        "total_records": total,
+        "accepted_training_examples": training,
+        "evaluation_records": evaluation,
     }
 
 
