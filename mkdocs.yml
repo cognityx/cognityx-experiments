@@ -10,6 +10,7 @@ nav:
   - Component idempotency audit: component-idempotency.md
   - Research publication: research-publication.md
   - Research materials: research-materials.md
+  - Production composition: production-composition.md
   - Future Research Agent: future-research-agent.md
   - CLI: cli.md
 plugins:

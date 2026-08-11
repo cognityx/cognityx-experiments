@@ -40,7 +40,23 @@ uv run cognityx-experiments run examples/training-comparison.yaml --dry-run
 ```
 
 `--dry-run` uses explicitly synthetic component results and never creates
-scientific evidence. Production composition supplies typed component gateways
-from the owning services.
+scientific evidence. A real run first checks every frozen input and runtime
+boundary:
+
+```bash
+uv run cognityx-experiments preflight research.yaml \
+  --storage-config storage.toml \
+  --results-repo ../cognityx-experiment-results
+uv run cognityx-experiments run research.yaml \
+  --storage-config storage.toml \
+  --results-repo ../cognityx-experiment-results \
+  --push-results
+```
+
+The results repository must be private and clean before a real run can begin.
+This is a fail-closed safety rule: if the repository is public, the preflight
+reports the problem and changes nothing. The example protocol is intentionally
+structural; add frozen Storage addresses for all evaluation sets and an
+Inference service address before using it for production.
 
 See the [documentation](docs/index.md) for contracts and ownership boundaries.
