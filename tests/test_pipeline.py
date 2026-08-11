@@ -156,13 +156,18 @@ class _AdversarialGateway(DryRunGateway):
                     "source_text": "LEAK-SOURCE-TEXT",
                     "source_evidence": "LEAK-SOURCE-EVIDENCE",
                     "raw_response": "LEAK-RAW-RESPONSE",
+                    "access_token": "LEAK-ACCESS-TOKEN",
+                    "refresh_token": "LEAK-REFRESH-TOKEN",
+                    "api_key": "LEAK-API-KEY",
                     "api_token": "LEAK-API-TOKEN",
                     "password": "LEAK-PASSWORD",
                     "private_key": "LEAK-PRIVATE-KEY",
-                    "local_path": "/home/researcher/private/data.json",
-                    "windows_path": r"C:\Users\researcher\private\data.json",
-                    "temporary_path": "/tmp/private/data.json",
-                    "private_storage_uri": "storage://private/raw/evidence.json",
+                    "local_path": "/home/person/secret/file.pdf",
+                    "windows_path": r"C:\Users\person\secret.txt",
+                    "temporary_path": "/tmp/run-123",
+                    "private_storage_uri": (
+                        "storage://local-main/private/source/document.pdf"
+                    ),
                     "resources": {"synthetic_cost_units": 1, "prompt_tokens": 17},
                 }
             )
@@ -330,16 +335,19 @@ def test_public_summary_projection_blocks_adversarial_record_content(
         "LEAK-SOURCE-TEXT",
         "LEAK-SOURCE-EVIDENCE",
         "LEAK-RAW-RESPONSE",
+        "LEAK-ACCESS-TOKEN",
+        "LEAK-REFRESH-TOKEN",
+        "LEAK-API-KEY",
         "LEAK-API-TOKEN",
         "LEAK-PASSWORD",
         "LEAK-PRIVATE-KEY",
         "LEAK-SPEC-PROMPT",
         "LEAK-SPEC-SOURCE",
         "LEAK-MODEL-PROMPT",
-        "/home/researcher",
-        r"C:\Users\researcher",
-        "/tmp/private",
-        "storage://private",
+        "/home/person/secret/file.pdf",
+        r"C:\Users\person\secret.txt",
+        "/tmp/run-123",
+        "storage://local-main/private/source/document.pdf",
     ):
         assert forbidden not in rendered
     assert not list(repository.rglob("records.jsonl"))
