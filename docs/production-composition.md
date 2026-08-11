@@ -44,6 +44,16 @@ Storage package, tokenizer selection, sequence length and accepted examples
 before preregistration or scientific execution begins. Model weights and the
 optimizer are not allocated by this check.
 
+A locally managed Inference service has a second inexpensive contract check.
+The frozen configuration supplies the production launcher and may supply a
+`probe_command` that uses that same launcher. Preflight executes the probe and
+requires a successful exit before any GPU work. The probe is responsible for
+importing the service and its direct runtime packages without loading model
+weights. This catches a broken virtual environment or incomplete Python search
+path before Training starts. Preflight records only the launcher name, exit
+status, argument count, and output byte counts; it does not copy diagnostic
+output into research evidence.
+
 Every component command has one simple machine boundary: a successful command
 writes exactly one JSON object to standard output. Progress and warnings belong
 on standard error. Experiments does not search for a JSON fragment inside human
@@ -114,6 +124,7 @@ boundaries. Separate pipeline tests cover narrative and Git-push retry.
 
 The composition extends public commands and services; it does not import their
 private APIs. Local Inference readiness uses a long cold-load timeout and the
-declared certified hardware profile. Preflight may read GPU inventory, but it
-never loads a model. Actual model execution remains a separate, explicitly
-approved shakedown after every preflight condition passes.
+declared certified hardware profile. Preflight resolves the declared launcher,
+runs its no-model probe, and may read GPU inventory, but it never loads a model.
+Actual model execution remains a separate, explicitly approved shakedown after
+every preflight condition passes.

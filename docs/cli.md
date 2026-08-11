@@ -17,8 +17,10 @@ Storage inputs, Inference service, GPU requirement, observation backend,
 budget, and the policy-gated Git journal. Its output records the observed
 repository visibility, frozen publication policy and data classification, and
 effective content projection. It may inspect a GPU inventory, but it does not
-load a model or start training. Any failed item makes the command return a
-non-zero status.
+load a model or start training. For a `local_managed` Inference service it also
+runs the frozen no-model `probe_command` through the same executable used by
+the production launch. A missing executable, failed import, or non-zero probe
+stops preflight. Any failed item makes the command return a non-zero status.
 
 ## Run or resume
 

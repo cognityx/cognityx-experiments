@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
@@ -86,6 +87,9 @@ class ProductionPreflight:
         training_contract_runner: (
             Callable[[Sequence[str], float | None], Mapping[str, Any]] | None
         ) = None,
+        local_inference_contract_runner: (
+            Callable[[Sequence[str], float | None], Mapping[str, Any]] | None
+        ) = None,
         actual_software: Sequence[SoftwareIdentity] | None = None,
         push_enabled: bool = False,
     ) -> None:
@@ -100,6 +104,9 @@ class ProductionPreflight:
         self.tracking_probe = tracking_probe or (lambda config: True)
         self.training_contract_runner = (
             training_contract_runner or _run_training_contract
+        )
+        self.local_inference_contract_runner = (
+            local_inference_contract_runner or _run_local_inference_contract
         )
         self.actual_software = tuple(
             actual_software
@@ -423,6 +430,7 @@ class ProductionPreflight:
     def _inference_and_gpu(self, spec: ResearchSpec) -> list[PreflightCheck]:
         checks: list[PreflightCheck] = []
         local_required = False
+        local_services: list[Mapping[str, Any]] = []
         try:
             identities: list[Mapping[str, Any]] = []
             for experiment in spec.experiments:
@@ -449,6 +457,7 @@ class ProductionPreflight:
                     identities.append(self.inference_probe(base_url))
                 elif mode == "local_managed":
                     local_required = True
+                    local_services.append(service)
                     certified = service.get("certified_profile_uri")
                     if not certified:
                         raise ValueError(
@@ -467,6 +476,7 @@ class ProductionPreflight:
             )
         except Exception as exc:
             checks.append(_failed("inference", "runtime_contract", exc))
+        checks.extend(self._local_inference_contracts(local_services))
         if local_required:
             try:
                 inventory = self.gpu_inventory()
@@ -491,6 +501,69 @@ class ProductionPreflight:
                     {"required": False},
                 )
             )
+        return checks
+
+    def _local_inference_contracts(
+        self, services: Sequence[Mapping[str, Any]]
+    ) -> list[PreflightCheck]:
+        if not services:
+            return [
+                _passed(
+                    "component_contract",
+                    "local_inference_launch",
+                    "No local managed Inference launch is planned.",
+                    {"required": False},
+                )
+            ]
+        checks: list[PreflightCheck] = []
+        observed: set[tuple[str, ...]] = set()
+        for service in services:
+            evidence: dict[str, Any] = {"success": False}
+            try:
+                command = _command_vector(service.get("command"), name="command")
+                probe = _command_vector(
+                    service.get("probe_command") or (command[0], "--help"),
+                    name="probe_command",
+                )
+                if probe[0] != command[0]:
+                    raise ValueError(
+                        "Local Inference probe must use the production launch "
+                        "executable"
+                    )
+                if probe in observed:
+                    continue
+                observed.add(probe)
+                resolved = _resolved_executable(command[0])
+                evidence.update(
+                    {
+                        "launch_executable": Path(resolved).name,
+                        "probe_argument_count": len(probe),
+                    }
+                )
+                result = self.local_inference_contract_runner(
+                    probe,
+                    float(service.get("probe_timeout_seconds", 60)),
+                )
+                evidence.update(_probe_evidence(result))
+                evidence["success"] = True
+                checks.append(
+                    _passed(
+                        "component_contract",
+                        "local_inference_launch",
+                        "The exact local Inference launcher passed its no-model "
+                        "runtime probe.",
+                        evidence,
+                    )
+                )
+            except Exception as exc:
+                checks.append(
+                    _failed(
+                        "component_contract",
+                        "local_inference_launch",
+                        exc,
+                        evidence=evidence,
+                    )
+                )
         return checks
 
     def _observability(self, spec: ResearchSpec) -> list[PreflightCheck]:
@@ -757,6 +830,57 @@ def _run_training_contract(
     arguments: Sequence[str], timeout_seconds: float | None
 ) -> Mapping[str, Any]:
     return JsonCommandRunner().run(arguments, timeout_seconds=timeout_seconds)
+
+
+def _run_local_inference_contract(
+    arguments: Sequence[str], timeout_seconds: float | None
+) -> Mapping[str, Any]:
+    completed = subprocess.run(
+        list(arguments),
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=timeout_seconds,
+    )
+    evidence = {
+        "exit_code": completed.returncode,
+        "stdout_byte_count": len(completed.stdout.encode("utf-8")),
+        "stderr_byte_count": len(completed.stderr.encode("utf-8")),
+    }
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Local Inference no-model probe failed; "
+            f"exit_status={completed.returncode}; "
+            f"stdout_bytes={evidence['stdout_byte_count']}; "
+            f"stderr_bytes={evidence['stderr_byte_count']}"
+        )
+    return evidence
+
+
+def _command_vector(value: Any, *, name: str) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise ValueError(f"Local Inference {name} must be an argument vector")
+    selected = tuple(str(item) for item in value)
+    if not selected or not selected[0]:
+        raise ValueError(f"Local Inference {name} must include an executable")
+    return selected
+
+
+def _resolved_executable(value: str) -> str:
+    if "/" in value or "\\" in value:
+        candidate = Path(value).expanduser().resolve()
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            raise ValueError(f"Local Inference executable is unavailable: {value}")
+        return str(candidate)
+    resolved = shutil.which(value)
+    if resolved is None:
+        raise ValueError(f"Local Inference executable is unavailable: {value}")
+    return resolved
+
+
+def _probe_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
+    allowed = ("exit_code", "stdout_byte_count", "stderr_byte_count")
+    return {name: value[name] for name in allowed if name in value}
 
 
 def _passed(
