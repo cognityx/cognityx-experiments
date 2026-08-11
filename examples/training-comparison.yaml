@@ -66,9 +66,16 @@ experiments:
       declared_exclusions:
         - rule: unresolved_candidate_pairs
     execution:
+      publication:
+        repository: cognityx/cognityx-experiment-results
+        repository_visibility_policy: public_summary
+        data_classification: public
+        content_policy: sanitized
       model:
         name: example/base-model
         revision: 0123456789abcdef
+        tokenizer_revision: 0123456789abcdef
+        tokenizer_checksum: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
       dataforge:
         package_contract: cognityx.dataforge.research-package/v1
       training:

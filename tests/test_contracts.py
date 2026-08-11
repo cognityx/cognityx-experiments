@@ -56,6 +56,17 @@ def test_optional_research_lineage_participates_in_checksum(
     )
 
 
+def test_publication_policy_participates_in_frozen_checksum(
+    research_spec: ResearchSpec,
+) -> None:
+    value = deepcopy(research_spec.to_dict())
+    value["experiments"][0]["execution"]["publication"][
+        "repository_visibility_policy"
+    ] = "private_required"
+
+    assert ResearchSpec.from_mapping(value).spec_checksum != research_spec.spec_checksum
+
+
 def test_multiple_declared_roles_require_primary_role(
     research_spec: ResearchSpec,
 ) -> None:

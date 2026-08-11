@@ -7,6 +7,7 @@ import pytest
 from cognityx_experiments.publication import (
     GitResearchPublisher,
     JournalRecord,
+    PublicationPolicy,
     build_snapshot,
 )
 
@@ -79,6 +80,77 @@ def _terminal_content() -> dict[str, object]:
         "tables/experiment-table.csv": "experiment,effect\nEXP-1,0.25\n",
         "figure-data/treatment-effects.json": {"effect": 0.25},
     }
+
+
+def _public_terminal_content() -> dict[str, object]:
+    finding = _terminal_content()["finding.json"]
+    return {
+        "research-summary.json": {"experiment_id": "EXP-1", "effect": 0.25},
+        "finding.json": finding,
+        "finding.md": "# Finding\n\nTreatment minus control was 0.25.\n",
+        "statistics.json": {"deltas_from_control": {"treatment": 0.25}},
+        "resources-summary.json": {"gpu_hours": 0.5},
+        "tables/experiment-table.csv": "experiment,effect\nEXP-1,0.25\n",
+        "figure-data/treatment-effects.json": {"effect": 0.25},
+        "lineage-summary.json": {"analysis_checksum": "sha256:analysis"},
+    }
+
+
+def test_publication_policy_defaults_are_private_and_frozen_in_snapshot() -> None:
+    default = PublicationPolicy.from_mapping(None)
+    assert default.repository_visibility_policy == "private_required"
+    assert default.data_classification == "unspecified"
+    assert default.content_policy == "sanitized"
+
+    policy = PublicationPolicy.from_mapping(
+        {
+            "repository_visibility_policy": "public_summary",
+            "data_classification": "public",
+            "content_policy": "full",
+        }
+    )
+    snapshot = build_snapshot(
+        moment="terminal",
+        experiment_id="EXP-1",
+        execution_id="execution-1",
+        publication_policy=policy,
+        content=_public_terminal_content(),
+    )
+
+    assert snapshot.manifest["publication_policy"] == policy.to_dict()
+    assert snapshot.manifest["effective_content_projection"] == "public_summary"
+    assert "records.jsonl" not in snapshot.files
+
+
+def test_public_summary_rejects_non_whitelisted_or_unsafe_content() -> None:
+    policy = PublicationPolicy(
+        repository_visibility_policy="public_summary",
+        data_classification="public",
+    )
+    with pytest.raises(ValueError, match="non-whitelisted"):
+        build_snapshot(
+            moment="terminal",
+            experiment_id="EXP-1",
+            execution_id="execution-1",
+            publication_policy=policy,
+            content={
+                **_public_terminal_content(),
+                "records.jsonl": [{"generated_answer": "secret"}],
+            },
+        )
+    unsafe = _public_terminal_content()
+    unsafe["research-summary.json"] = {
+        "experiment_id": "EXP-1",
+        "nested": {"prompt": "private prompt"},
+    }
+    with pytest.raises(ValueError, match="forbidden field"):
+        build_snapshot(
+            moment="terminal",
+            experiment_id="EXP-1",
+            execution_id="execution-1",
+            publication_policy=policy,
+            content=unsafe,
+        )
 
 
 def test_snapshot_whitelist_redaction_and_superseding_identity() -> None:

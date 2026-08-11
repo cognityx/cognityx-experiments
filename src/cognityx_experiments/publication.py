@@ -15,7 +15,13 @@ from cognityx_experiments.canonical import canonical_bytes, checksum, dump_yaml,
 
 SNAPSHOT_SCHEMA = "cognityx.research.snapshot/v1"
 RECEIPT_SCHEMA = "cognityx.research.git-publication-receipt/v1"
+PUBLICATION_POLICY_SCHEMA = "cognityx.research.publication-policy/v1"
 CONTENT_POLICIES = frozenset({"full", "sanitized", "metadata_only"})
+REPOSITORY_VISIBILITY_POLICIES = frozenset({"private_required", "public_summary"})
+DATA_CLASSIFICATIONS = frozenset(
+    {"unspecified", "public", "internal", "confidential", "restricted"}
+)
+DEFAULT_RESULTS_REPOSITORY = "cognityx/cognityx-experiment-results"
 _PRE_FILES = frozenset(
     {
         "research-spec.yaml",
@@ -43,6 +49,20 @@ _TERMINAL_FILES = frozenset(
         "narrative.json",
     }
 )
+_PUBLIC_PREREGISTRATION_FILES = frozenset({"preregistration.json"})
+_PUBLIC_TERMINAL_FILES = frozenset(
+    {
+        "research-summary.json",
+        "finding.json",
+        "finding.md",
+        "statistics.json",
+        "resources-summary.json",
+        "tables/experiment-table.csv",
+        "tables/experiment-table.json",
+        "figure-data/treatment-effects.json",
+        "lineage-summary.json",
+    }
+)
 _CREDENTIAL_KEYS = frozenset(
     {
         "authorization",
@@ -64,7 +84,100 @@ _SANITIZED_TEXT_KEYS = frozenset(
     {"answer", "candidate_answer", "prompt", "response", "source_text", "raw_text"}
 )
 _PATH = re.compile(r"(?:/home/|/tmp/|[A-Za-z]:\\Users\\)")
+_STORAGE_URI = re.compile(r"\bstorage://", re.IGNORECASE)
+_URL_CREDENTIAL = re.compile(
+    r"\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@",
+    re.IGNORECASE,
+)
+_PUBLIC_FORBIDDEN_KEYS = frozenset(
+    {
+        "prompt",
+        "candidate_answer",
+        "reference_answer",
+        "gold_reference",
+        "source_text",
+        "source_evidence",
+        "generated_answer",
+        "raw_response",
+        "response",
+        "answer",
+        "raw_text",
+        "evidence_text",
+        "environment",
+        "environment_variables",
+        "env",
+        "records",
+        "predictions",
+        "training_examples",
+        "judge_request",
+        "judge_response",
+    }
+)
 _PUBLISH_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationPolicy:
+    """Frozen rules for the durable Git research projection."""
+
+    repository_visibility_policy: str = "private_required"
+    data_classification: str = "unspecified"
+    content_policy: str = "sanitized"
+    repository: str = DEFAULT_RESULTS_REPOSITORY
+    schema: str = PUBLICATION_POLICY_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.repository_visibility_policy not in REPOSITORY_VISIBILITY_POLICIES:
+            raise ValueError(
+                "Unsupported repository_visibility_policy: "
+                f"{self.repository_visibility_policy}"
+            )
+        if self.data_classification not in DATA_CLASSIFICATIONS:
+            raise ValueError(
+                f"Unsupported publication data_classification: "
+                f"{self.data_classification}"
+            )
+        if self.content_policy not in CONTENT_POLICIES:
+            raise ValueError(
+                f"Unsupported publication content_policy: {self.content_policy}"
+            )
+        if not self.repository.strip():
+            raise ValueError("Publication repository must be declared")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any] | None) -> PublicationPolicy:
+        selected = dict(value or {})
+        return cls(
+            repository_visibility_policy=str(
+                selected.get("repository_visibility_policy") or "private_required"
+            ),
+            data_classification=str(
+                selected.get("data_classification") or "unspecified"
+            ),
+            content_policy=str(selected.get("content_policy") or "sanitized"),
+            repository=str(selected.get("repository") or DEFAULT_RESULTS_REPOSITORY),
+        )
+
+    @classmethod
+    def from_experiment(cls, experiment: Any) -> PublicationPolicy:
+        execution = dict(experiment.execution)
+        return cls.from_mapping(execution.get("publication"))
+
+    @property
+    def effective_content_projection(self) -> str:
+        if self.repository_visibility_policy == "public_summary":
+            return "public_summary"
+        return self.content_policy
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "schema": self.schema,
+            "repository": self.repository,
+            "repository_visibility_policy": self.repository_visibility_policy,
+            "data_classification": self.data_classification,
+            "content_policy": self.content_policy,
+            "effective_content_projection": self.effective_content_projection,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +187,7 @@ class Snapshot:
     execution_id: str
     moment: str
     content_policy: str
+    publication_policy: PublicationPolicy
     files: Mapping[str, bytes]
     manifest: Mapping[str, Any]
 
@@ -118,32 +232,56 @@ def build_snapshot(
     execution_id: str,
     content: Mapping[str, Any],
     content_policy: str = "sanitized",
+    publication_policy: PublicationPolicy | Mapping[str, Any] | None = None,
     supersedes_snapshot_id: str | None = None,
 ) -> Snapshot:
     """Build an immutable snapshot from an explicit filename whitelist."""
     if moment not in {"preregistration", "terminal"}:
         raise ValueError("Snapshot moment must be preregistration or terminal")
-    if content_policy not in CONTENT_POLICIES:
-        raise ValueError(f"Unsupported content policy: {content_policy}")
-    allowed = _PRE_FILES if moment == "preregistration" else _TERMINAL_FILES
+    policy = _coerce_publication_policy(publication_policy, content_policy)
+    projection = policy.effective_content_projection
+    if projection == "public_summary":
+        allowed = (
+            _PUBLIC_PREREGISTRATION_FILES
+            if moment == "preregistration"
+            else _PUBLIC_TERMINAL_FILES
+        )
+    else:
+        allowed = _PRE_FILES if moment == "preregistration" else _TERMINAL_FILES
     unknown = set(content) - allowed
     if unknown:
         raise ValueError(
             f"Snapshot contains non-whitelisted files: {', '.join(sorted(unknown))}"
         )
-    required = (
-        {"research-spec.yaml", "logical-plan.json", "execution-plan.json"}
-        if moment == "preregistration"
-        else {
-            "experiment.json",
-            "lineage.json",
-            "statistics.json",
-            "finding.json",
-            "finding.md",
-            "tables/experiment-table.csv",
-            "figure-data/treatment-effects.json",
-        }
-    )
+    if projection == "public_summary":
+        required = (
+            {"preregistration.json"}
+            if moment == "preregistration"
+            else {
+                "research-summary.json",
+                "finding.json",
+                "finding.md",
+                "statistics.json",
+                "resources-summary.json",
+                "tables/experiment-table.csv",
+                "figure-data/treatment-effects.json",
+                "lineage-summary.json",
+            }
+        )
+    else:
+        required = (
+            {"research-spec.yaml", "logical-plan.json", "execution-plan.json"}
+            if moment == "preregistration"
+            else {
+                "experiment.json",
+                "lineage.json",
+                "statistics.json",
+                "finding.json",
+                "finding.md",
+                "tables/experiment-table.csv",
+                "figure-data/treatment-effects.json",
+            }
+        )
     missing = required - set(content)
     if missing:
         raise ValueError(
@@ -151,14 +289,18 @@ def build_snapshot(
         )
     selected: dict[str, bytes] = {}
     for name, value in content.items():
-        if content_policy == "metadata_only" and name in {
+        if projection == "metadata_only" and name in {
             "records.jsonl",
             "comparison.md",
             "narrative.json",
         }:
             continue
-        sanitized = _sanitize(value, content_policy=content_policy)
-        selected[name] = _file_bytes(name, sanitized)
+        if projection == "public_summary":
+            _validate_public_summary_value(value, location=name)
+            selected[name] = _file_bytes(name, value)
+        else:
+            sanitized = _sanitize(value, content_policy=projection)
+            selected[name] = _file_bytes(name, sanitized)
     file_manifest = [
         {"path": name, "sha256": _sha256_bytes(value), "size_bytes": len(value)}
         for name, value in sorted(selected.items())
@@ -168,7 +310,9 @@ def build_snapshot(
         "moment": moment,
         "experiment_id": experiment_id,
         "execution_id": execution_id,
-        "content_policy": content_policy,
+        "content_policy": policy.content_policy,
+        "publication_policy": policy.to_dict(),
+        "effective_content_projection": projection,
         "supersedes_snapshot_id": supersedes_snapshot_id,
         "files": file_manifest,
     }
@@ -180,7 +324,8 @@ def build_snapshot(
         experiment_id=experiment_id,
         execution_id=execution_id,
         moment=moment,
-        content_policy=content_policy,
+        content_policy=policy.content_policy,
+        publication_policy=policy,
         files=selected,
         manifest=manifest,
     )
@@ -223,6 +368,11 @@ class GitResearchPublisher:
         self._verify_repository()
         self._ensure_clean()
         self._synchronize()
+        if (
+            snapshot.publication_policy.effective_content_projection == "public_summary"
+            and journal is not None
+        ):
+            _validate_public_journal(journal)
         destination = self.repository / snapshot.relative_path
         written = self._write_snapshot(destination, snapshot)
         if journal is not None:
@@ -428,6 +578,67 @@ def write_publication_receipt(
     return str(stored.uri)
 
 
+def _coerce_publication_policy(
+    value: PublicationPolicy | Mapping[str, Any] | None,
+    legacy_content_policy: str,
+) -> PublicationPolicy:
+    if value is None:
+        return PublicationPolicy(content_policy=legacy_content_policy)
+    if isinstance(value, PublicationPolicy):
+        return value
+    return PublicationPolicy.from_mapping(value)
+
+
+def _validate_public_journal(journal: JournalRecord) -> None:
+    for location, value in {
+        "journal.hypothesis": journal.hypothesis,
+        "journal.questions": journal.questions,
+        "journal.finding": journal.finding,
+        "journal.table_csv": journal.table_csv,
+        "journal.figure_data": journal.figure_data,
+    }.items():
+        _validate_public_summary_value(value, location=location)
+
+
+def _validate_public_summary_value(value: Any, *, location: str) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            normalized = _normalized_key(str(key))
+            if normalized in _PUBLIC_FORBIDDEN_KEYS or _credential_key(str(key)):
+                raise ValueError(
+                    f"Public-summary content contains forbidden field at "
+                    f"{location}.{key}"
+                )
+            _validate_public_summary_value(
+                item,
+                location=f"{location}.{key}",
+            )
+        return
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for index, item in enumerate(value):
+            _validate_public_summary_value(
+                item,
+                location=f"{location}[{index}]",
+            )
+        return
+    if isinstance(value, str):
+        if _PATH.search(value) or _STORAGE_URI.search(value):
+            raise ValueError(
+                f"Public-summary content contains a private location at {location}"
+            )
+        if _URL_CREDENTIAL.search(value):
+            raise ValueError(
+                f"Public-summary content contains URL credentials at {location}"
+            )
+        return
+    if value is None or isinstance(value, (int, float, bool)):
+        return
+    raise ValueError(
+        f"Public-summary content has unsupported value at {location}: "
+        f"{type(value).__name__}"
+    )
+
+
 def _sanitize(value: Any, *, content_policy: str, key: str = "") -> Any:
     if isinstance(value, Mapping):
         result: dict[str, Any] = {}
@@ -482,10 +693,14 @@ def _sha256_bytes(value: bytes) -> str:
 
 
 def _credential_key(key: str) -> bool:
-    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key))
-    normalized = re.sub(r"[^A-Za-z0-9]+", "_", separated).lower().strip("_")
+    normalized = _normalized_key(key)
     padded = f"_{normalized}_"
     return any(f"_{credential}_" in padded for credential in _CREDENTIAL_KEYS)
+
+
+def _normalized_key(key: str) -> str:
+    separated = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key))
+    return re.sub(r"[^A-Za-z0-9]+", "_", separated).lower().strip("_")
 
 
 def _normalize_repository(value: str) -> str:

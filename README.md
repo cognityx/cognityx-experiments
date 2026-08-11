@@ -22,6 +22,13 @@ is delegated to the Cognityx component that owns it. Cognityx Storage remains
 the durable source of truth; observation backends are searchable secondary
 indexes.
 
+Research snapshots can also feed a public results journal. Public publication
+must be declared in the frozen research YAML, is allowed only for data marked
+public, and produces a strict summary rather than copying record-level
+evidence. Raw sources, prompts, answers, credentials, local paths, and private
+Storage addresses remain outside the public repository. See
+[Research publication](docs/research-publication.md) for the exact policy.
+
 ## Quick start
 
 ```bash

@@ -26,6 +26,7 @@ from cognityx_experiments.mermaid import render_mermaid
 from cognityx_experiments.pipeline import ResearchMaterialPipeline
 from cognityx_experiments.publication import (
     GitResearchPublisher,
+    PublicationPolicy,
     Snapshot,
     build_snapshot,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "GitResearchPublisher",
     "Hypothesis",
     "LogicalExperimentPlan",
+    "PublicationPolicy",
     "ResearchArea",
     "ResearchLineage",
     "ResearchQuestion",

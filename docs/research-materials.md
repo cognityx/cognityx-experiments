@@ -20,3 +20,11 @@ The cumulative journal appends immutable finding and evidence rows under the
 research area, hypothesis, and research question. Derived Markdown summaries
 and CSV tables can be regenerated. This makes paper preparation continuous
 rather than a manual step after expensive execution.
+
+When the frozen publication policy selects a public summary, the journal uses
+the same safe construction as the snapshot. It keeps aggregate findings,
+checksums, and opaque execution identities, while omitting record-level
+examples and private Storage addresses. The aggregation commands continue to
+build research summaries and paper-material indexes from this public journal.
+The complete evidence remains in Cognityx Storage, which is the authority for
+audit and later controlled analysis.
