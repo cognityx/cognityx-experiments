@@ -29,6 +29,7 @@ from cognityx_experiments.executor import (
     DryRunGateway,
     ExperimentExecutor,
 )
+from cognityx_experiments.human import render_human
 from cognityx_experiments.ledger import ExperimentLedger
 from cognityx_experiments.mermaid import render_mermaid
 from cognityx_experiments.pipeline import ResearchMaterialPipeline
@@ -49,6 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name)
         command.add_argument("research_yaml", type=Path)
         command.add_argument("--execution-id")
+        if name != "show-plan":
+            command.add_argument("--human", action="store_true")
     run = commands.add_parser("run")
     run.add_argument("research_yaml", type=Path)
     run.add_argument("--execution-id")
@@ -59,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_storage.add_argument("--storage-config", type=Path)
     run.add_argument("--results-repo", type=Path)
     run.add_argument("--push-results", action="store_true")
+    run.add_argument("--human", action="store_true")
     preflight = commands.add_parser("preflight")
     preflight.add_argument("research_yaml", type=Path)
     preflight.add_argument("--execution-id")
@@ -67,11 +71,13 @@ def build_parser() -> argparse.ArgumentParser:
     preflight_storage.add_argument("--storage-config", type=Path)
     preflight.add_argument("--results-repo", type=Path, required=True)
     preflight.add_argument("--push-results", action="store_true")
+    preflight.add_argument("--human", action="store_true")
     status = commands.add_parser("status")
     status.add_argument("execution_id")
     status_storage = status.add_mutually_exclusive_group()
     status_storage.add_argument("--storage-root", type=Path)
     status_storage.add_argument("--storage-config", type=Path)
+    status.add_argument("--human", action="store_true")
     config = commands.add_parser("config")
     config_commands = config.add_subparsers(dest="config_action", required=True)
     for name in ("show", "validate"):
@@ -79,10 +85,13 @@ def build_parser() -> argparse.ArgumentParser:
         selected = command.add_mutually_exclusive_group()
         selected.add_argument("--storage-config", type=Path)
         selected.add_argument("--storage-root", type=Path)
+        command.add_argument("--human", action="store_true")
     for name in ("research-summary", "paper-material"):
         command = commands.add_parser(name)
         command.add_argument("target")
         command.add_argument("--results-repo", type=Path, required=True)
+        if name == "paper-material":
+            command.add_argument("--human", action="store_true")
     return parser
 
 
@@ -94,21 +103,15 @@ def main(argv: list[str] | None = None) -> int:
             report = _configuration_report(args.storage_root, args.storage_config)
         except (OSError, UnicodeError, ValueError) as exc:
             report = _configuration_error(exc)
-            print(json.dumps(report, indent=2, sort_keys=True))
+            _write(report, human=args.human)
             return 2
-        print(json.dumps(report, indent=2, sort_keys=True))
+        _write(report, human=args.human)
         return 0 if report["valid"] else 2
     if args.command == "research-summary":
         print(research_summary(args.results_repo, args.target), end="")
         return 0
     if args.command == "paper-material":
-        print(
-            json.dumps(
-                paper_material(args.results_repo, args.target),
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        _write(paper_material(args.results_repo, args.target), human=args.human)
         return 0
     if args.command == "status":
         ledger = ExperimentLedger(
@@ -116,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
             args.execution_id,
         )
         plan = _execution_plan(ledger.load_execution_plan())
-        print(json.dumps(ledger.status(plan), indent=2, sort_keys=True))
+        _write(ledger.status(plan), human=args.human)
         return 0
     spec = ResearchSpec.from_mapping(load_yaml(args.research_yaml))
     logical = compile_logical_plan(spec)
@@ -131,30 +134,24 @@ def main(argv: list[str] | None = None) -> int:
         software_identities=software_identities,
     )
     if args.command == "validate":
-        print(
-            json.dumps(
-                {
-                    "valid": True,
-                    "schema": spec.schema,
-                    "spec_checksum": spec.spec_checksum,
-                    "experiment_count": len(spec.experiments),
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        _write(
+            {
+                "valid": True,
+                "schema": spec.schema,
+                "spec_checksum": spec.spec_checksum,
+                "experiment_count": len(spec.experiments),
+            },
+            human=args.human,
         )
         return 0
     if args.command == "plan":
-        print(
-            json.dumps(
-                {
-                    "research_spec": spec.to_dict(),
-                    "logical_plan": logical.to_dict(),
-                    "execution_plan": plan.to_dict(),
-                },
-                indent=2,
-                sort_keys=True,
-            )
+        _write(
+            {
+                "research_spec": spec.to_dict(),
+                "logical_plan": logical.to_dict(),
+                "execution_plan": plan.to_dict(),
+            },
+            human=args.human,
         )
         return 0
     if args.command == "show-plan":
@@ -168,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
             actual_software=software_identities,
             push_enabled=args.push_results,
         ).run(spec, logical, plan)
-        print(json.dumps(preflight_result.to_dict(), indent=2, sort_keys=True))
+        _write(preflight_result.to_dict(), human=args.human)
         return 0 if preflight_result.passed else 2
     if not args.dry_run and args.results_repo is None:
         parser.error("production run requires --results-repo")
@@ -184,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
             push_enabled=args.push_results,
         ).run(spec, logical, plan)
         if not preflight.passed:
-            print(json.dumps(preflight.to_dict(), indent=2, sort_keys=True))
+            _write(preflight.to_dict(), human=args.human)
             return 2
         publisher = GitResearchPublisher(
             args.results_repo,
@@ -215,8 +212,15 @@ def main(argv: list[str] | None = None) -> int:
         execution_context,
         resume=args.resume,
     )
-    print(json.dumps(execution_result, indent=2, sort_keys=True))
+    _write(execution_result, human=args.human)
     return 0
+
+
+def _write(value: Any, *, human: bool) -> None:
+    if human:
+        print(render_human(value))
+    else:
+        print(json.dumps(value, indent=2, sort_keys=True))
 
 
 def _storage_resolution(

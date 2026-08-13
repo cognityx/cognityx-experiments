@@ -78,6 +78,22 @@ cognityx-experiments research-summary HYPOTHESIS_OR_RQ --results-repo PATH
 cognityx-experiments paper-material HYPOTHESIS_OR_RQ --results-repo PATH
 ```
 
+Finite JSON commands accept an explicit `--human` option. JSON remains the
+unchanged default for automation. Human mode renders the same already-safe
+payload and does not repeat configuration resolution or component work.
+
+```bash
+cognityx-experiments config show --human
+cognityx-experiments validate RESEARCH.yaml --human
+cognityx-experiments plan RESEARCH.yaml --human
+cognityx-experiments preflight RESEARCH.yaml --results-repo PATH --human
+cognityx-experiments status EXECUTION_ID --human
+cognityx-experiments paper-material HYPOTHESIS_OR_RQ --results-repo PATH --human
+```
+
+`show-plan` remains Mermaid and `research-summary` remains Markdown-native, so
+neither command gains a competing presentation flag.
+
 `validate` checks the hierarchy and controlled design. `plan` prints both
 canonical checksums and the logical plan. `show-plan` prints a Mermaid view of
 the execution schedule.
