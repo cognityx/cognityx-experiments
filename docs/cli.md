@@ -12,6 +12,24 @@ cognityx-experiments preflight research.yaml \
   --results-repo ../cognityx-experiment-results
 ```
 
+## Inspect the composed Storage dependency
+
+Experiments owns scientific research YAML, not a persistent component settings
+file. Its configuration commands therefore explain the Storage dependency used
+by `run`, `preflight`, and `status`:
+
+```bash
+cognityx-experiments config show
+cognityx-experiments config validate --storage-config storage.toml
+cognityx-experiments config show --storage-root experiment-storage
+```
+
+When neither selector is supplied, normal Storage discovery runs. Only when
+that discovery reaches built-in defaults does Experiments retain its historical
+local `experiment-storage` root. `--storage-config` and `--storage-root` are
+mutually exclusive. Research YAML and nested DataForge, Training, Inference,
+and Evaluator specifications remain explicit scientific workload inputs.
+
 This returns a structured checklist for the research plan, installed software,
 Storage inputs, Inference service, GPU requirement, observation backend,
 budget, and the policy-gated Git journal. Its output records the observed

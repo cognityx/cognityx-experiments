@@ -197,8 +197,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cognityx-observability", git = "https://github.com/cognityx/cognityx-observability.git?rev=b02ec3c103d0b3fd22b7c33888155b763d6baa9f" },
-    { name = "cognityx-resource", git = "https://github.com/cognityx/cognityx-resource.git?rev=b23220b69fcb182e681cf13276c37474666c9bd2" },
-    { name = "cognityx-storage", git = "https://github.com/cognityx/cognityx-storage.git?rev=4b47b898b2fb465263d8c44350d4241f52b13c90" },
+    { name = "cognityx-resource", git = "https://github.com/cognityx/cognityx-resource.git?rev=a740b0d54681236ac0699277a82e502ed385c954" },
+    { name = "cognityx-storage", git = "https://github.com/cognityx/cognityx-storage.git?rev=9e51398e89d5df952e37b766b62f31bb2519b5ff" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
 
@@ -222,12 +222,12 @@ dependencies = [
 [[package]]
 name = "cognityx-resource"
 version = "0.1.0"
-source = { git = "https://github.com/cognityx/cognityx-resource.git#b23220b69fcb182e681cf13276c37474666c9bd2" }
+source = { git = "https://github.com/cognityx/cognityx-resource.git?rev=a740b0d54681236ac0699277a82e502ed385c954#a740b0d54681236ac0699277a82e502ed385c954" }
 
 [[package]]
 name = "cognityx-storage"
 version = "0.1.0"
-source = { git = "https://github.com/cognityx/cognityx-storage.git?rev=4b47b898b2fb465263d8c44350d4241f52b13c90#4b47b898b2fb465263d8c44350d4241f52b13c90" }
+source = { git = "https://github.com/cognityx/cognityx-storage.git?rev=9e51398e89d5df952e37b766b62f31bb2519b5ff#9e51398e89d5df952e37b766b62f31bb2519b5ff" }
 dependencies = [
     { name = "cognityx-resource" },
 ]
