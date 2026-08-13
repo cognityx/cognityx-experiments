@@ -41,10 +41,16 @@ def test_cli_refuses_to_misrepresent_unconfigured_run_as_real(tmp_path: Path) ->
 
 def test_storage_selectors_are_mutually_exclusive() -> None:
     with pytest.raises(SystemExit):
-        main([
-            "config", "show", "--storage-root", "root",
-            "--storage-config", "storage.toml",
-        ])
+        main(
+            [
+                "config",
+                "show",
+                "--storage-root",
+                "root",
+                "--storage-config",
+                "storage.toml",
+            ]
+        )
 
 
 def test_config_discovery_and_explicit_selection_are_static_json(
@@ -71,9 +77,10 @@ def test_config_discovery_and_explicit_selection_are_static_json(
 
     assert main(["config", "validate", "--storage-config", str(config)]) == 0
     validated = json.loads(capsys.readouterr().out)
-    assert validated["dependencies"]["storage"]["master_config"]["sha256"] == shown[
-        "dependencies"
-    ]["storage"]["master_config"]["sha256"]
+    assert (
+        validated["dependencies"]["storage"]["master_config"]["sha256"]
+        == shown["dependencies"]["storage"]["master_config"]["sha256"]
+    )
 
 
 def test_no_real_storage_file_preserves_local_compatibility_fallback(
@@ -88,9 +95,9 @@ def test_no_real_storage_file_preserves_local_compatibility_fallback(
     assert shown["effective"]["storage_compatibility_fallback"] == (
         "built-in-compatibility-fallback"
     )
-    root = shown["dependencies"]["storage"]["effective"]["profiles"][0][
-        "options"
-    ]["root"]
+    root = shown["dependencies"]["storage"]["effective"]["profiles"][0]["options"][
+        "root"
+    ]
     assert root == "experiment-storage"
 
     explicit_root = tmp_path / "explicit-storage"

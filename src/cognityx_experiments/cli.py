@@ -261,17 +261,19 @@ def _configuration_report(root: Path | None, config: Path | None) -> dict[str, A
         previous = StorageConfig.built_in().profiles["local-main"].options["root"]
         effective = storage.config.profiles["local-main"].options["root"]
         if previous != effective:
-            overrides.append({
-                "key": "storage.profiles.local-main.options.root",
-                "source": "--storage-root",
-                "previous": previous,
-                "effective": effective,
-                "changed": True,
-            })
+            overrides.append(
+                {
+                    "key": "storage.profiles.local-main.options.root",
+                    "source": "--storage-root",
+                    "previous": previous,
+                    "effective": effective,
+                    "changed": True,
+                }
+            )
             dependency["overrides"] = list(overrides)
-            dependency["field_sources"][
-                "storage.profiles.local-main.options.root"
-            ] = "--storage-root"
+            dependency["field_sources"]["storage.profiles.local-main.options.root"] = (
+                "--storage-root"
+            )
     return {
         "component": "experiments",
         "configuration_kind": "composed-dependencies",
