@@ -8,7 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from cognityx_resource import ExecutionContext, ResourceContext
-from cognityx_storage import StorageConfig, StorageRuntime
+from cognityx_storage import (
+    StorageConfig,
+    StorageConfigResolution,
+    StorageRuntime,
+    resolve_storage_config,
+)
 
 from cognityx_experiments.aggregation import paper_material, research_summary
 from cognityx_experiments.canonical import load_yaml
@@ -49,22 +54,31 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--execution-id")
     run.add_argument("--resume", action="store_true")
     run.add_argument("--dry-run", action="store_true")
-    run.add_argument("--storage-root", type=Path, default=Path("experiment-storage"))
-    run.add_argument("--storage-config", type=Path)
+    run_storage = run.add_mutually_exclusive_group()
+    run_storage.add_argument("--storage-root", type=Path)
+    run_storage.add_argument("--storage-config", type=Path)
     run.add_argument("--results-repo", type=Path)
     run.add_argument("--push-results", action="store_true")
     preflight = commands.add_parser("preflight")
     preflight.add_argument("research_yaml", type=Path)
     preflight.add_argument("--execution-id")
-    preflight.add_argument(
-        "--storage-root", type=Path, default=Path("experiment-storage")
-    )
-    preflight.add_argument("--storage-config", type=Path)
+    preflight_storage = preflight.add_mutually_exclusive_group()
+    preflight_storage.add_argument("--storage-root", type=Path)
+    preflight_storage.add_argument("--storage-config", type=Path)
     preflight.add_argument("--results-repo", type=Path, required=True)
     preflight.add_argument("--push-results", action="store_true")
     status = commands.add_parser("status")
     status.add_argument("execution_id")
-    status.add_argument("--storage-root", type=Path, default=Path("experiment-storage"))
+    status_storage = status.add_mutually_exclusive_group()
+    status_storage.add_argument("--storage-root", type=Path)
+    status_storage.add_argument("--storage-config", type=Path)
+    config = commands.add_parser("config")
+    config_commands = config.add_subparsers(dest="config_action", required=True)
+    for name in ("show", "validate"):
+        command = config_commands.add_parser(name)
+        selected = command.add_mutually_exclusive_group()
+        selected.add_argument("--storage-config", type=Path)
+        selected.add_argument("--storage-root", type=Path)
     for name in ("research-summary", "paper-material"):
         command = commands.add_parser(name)
         command.add_argument("target")
@@ -75,6 +89,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "config":
+        try:
+            report = _configuration_report(args.storage_root, args.storage_config)
+        except (OSError, UnicodeError, ValueError) as exc:
+            report = _configuration_error(exc)
+            print(json.dumps(report, indent=2, sort_keys=True))
+            return 2
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report["valid"] else 2
     if args.command == "research-summary":
         print(research_summary(args.results_repo, args.target), end="")
         return 0
@@ -89,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "status":
         ledger = ExperimentLedger(
-            _runtime(args.storage_root).for_role("artifact"), args.execution_id
+            _runtime(args.storage_root, args.storage_config).for_role("artifact"),
+            args.execution_id,
         )
         plan = _execution_plan(ledger.load_execution_plan())
         print(json.dumps(ledger.status(plan), indent=2, sort_keys=True))
@@ -195,10 +219,100 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _runtime(root: Path, config: Path | None = None) -> StorageRuntime:
+def _storage_resolution(
+    root: Path | None, config: Path | None = None
+) -> tuple[StorageConfigResolution, str | None]:
     if config is not None:
-        return StorageRuntime.load(config_file=config)
-    return StorageRuntime.from_config(StorageConfig.built_in(root=root))
+        return resolve_storage_config(config_file=config), None
+    if root is not None:
+        return (
+            StorageConfigResolution(
+                config=StorageConfig.built_in(root=root),
+                selected_by="built-in",
+                path=None,
+                file_sha256=None,
+            ),
+            "explicit-root",
+        )
+    discovered = resolve_storage_config()
+    if discovered.path is not None:
+        return discovered, None
+    return (
+        StorageConfigResolution(
+            config=StorageConfig.built_in(root=Path("experiment-storage")),
+            selected_by="built-in",
+            path=None,
+            file_sha256=None,
+        ),
+        "built-in-compatibility-fallback",
+    )
+
+
+def _runtime(root: Path | None, config: Path | None = None) -> StorageRuntime:
+    resolution, _fallback = _storage_resolution(root, config)
+    return StorageRuntime.from_config(resolution.config)
+
+
+def _configuration_report(root: Path | None, config: Path | None) -> dict[str, Any]:
+    storage, fallback = _storage_resolution(root, config)
+    dependency = storage.to_dict()
+    overrides: list[dict[str, Any]] = []
+    if root is not None:
+        previous = StorageConfig.built_in().profiles["local-main"].options["root"]
+        effective = storage.config.profiles["local-main"].options["root"]
+        if previous != effective:
+            overrides.append({
+                "key": "storage.profiles.local-main.options.root",
+                "source": "--storage-root",
+                "previous": previous,
+                "effective": effective,
+                "changed": True,
+            })
+            dependency["overrides"] = list(overrides)
+            dependency["field_sources"][
+                "storage.profiles.local-main.options.root"
+            ] = "--storage-root"
+    return {
+        "component": "experiments",
+        "configuration_kind": "composed-dependencies",
+        "valid": dependency["valid"],
+        "master_config": {
+            "kind": "built-in",
+            "path": None,
+            "selected_by": "built-in",
+            "sha256": None,
+        },
+        "config_layers": [],
+        "field_sources": {},
+        "overrides": overrides,
+        "effective": {
+            "persistent_component_settings": None,
+            "storage_compatibility_fallback": fallback,
+        },
+        "dependencies": {"storage": dependency},
+        "warnings": dependency["warnings"],
+        "errors": dependency["errors"],
+    }
+
+
+def _configuration_error(exc: Exception) -> dict[str, Any]:
+    return {
+        "component": "experiments",
+        "configuration_kind": "composed-dependencies",
+        "valid": False,
+        "master_config": {
+            "kind": "built-in",
+            "path": None,
+            "selected_by": "built-in",
+            "sha256": None,
+        },
+        "config_layers": [],
+        "field_sources": {},
+        "overrides": [],
+        "effective": {},
+        "warnings": [],
+        "errors": [{"code": "configuration_invalid", "message": str(exc)}],
+    }
 
 
 def _execution_plan(value: dict[str, Any]) -> ExecutionPlan:
